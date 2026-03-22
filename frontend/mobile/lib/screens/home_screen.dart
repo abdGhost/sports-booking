@@ -9,9 +9,11 @@ import '../providers/event_provider.dart';
 import '../providers/location_provider.dart';
 import '../theme/sports_app_theme.dart';
 import '../utils/geo_utils.dart';
+import '../utils/inr_money.dart';
 import '../widgets/sports_components.dart';
 import 'create_event_screen.dart';
 import 'event_detail_screen.dart';
+import 'my_bookings_screen.dart';
 import 'organizer_events_screen.dart';
 
 /// Frost chip used on Nearby + Featured photo cards (live-score style).
@@ -79,7 +81,7 @@ class _HomeScreenState extends State<HomeScreen> {
     (
       'assets/images/feature_basketball.jpg',
       'City Court Showdown',
-      'Night match · 5v5 teams',
+      'Night event · 5v5 teams',
       'Basketball',
     ),
     (
@@ -142,6 +144,14 @@ class _HomeScreenState extends State<HomeScreen> {
     if (h < 12) return 'Good morning';
     if (h < 17) return 'Good afternoon';
     return 'Good evening';
+  }
+
+  /// Home hero subtitle — organizers browse the same feed; copy highlights nearby events.
+  String _homeHeroTagline(AuthProvider auth) {
+    if (auth.user?.isOrganizer ?? false) {
+      return 'Browse nearby events';
+    }
+    return 'Find nearby events';
   }
 
   double _distanceKm(SportEvent e, double userLat, double userLong) {
@@ -267,6 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             greeting: _greeting(),
                             firstName: _firstName(auth),
                             dateLine: dateLine,
+                            tagline: _homeHeroTagline(auth),
                           ),
                           Positioned(
                             left: 20,
@@ -460,7 +471,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                               const SizedBox(height: 20),
                               Text(
-                                'No matches nearby',
+                                'No events nearby',
                                 style: theme.textTheme.titleLarge?.copyWith(
                                   fontWeight: FontWeight.w800,
                                   color: SportsAppColors.accentBlue900,
@@ -500,7 +511,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
                         child: SportsSectionTitle(
-                          'Nearby matches',
+                          'Nearby events',
                           action: TextButton(
                             onPressed: () {},
                             child: Text(
@@ -628,7 +639,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   NavigationDestination(
                     icon: _NavBarSvg(asset: 'assets/vectors/nav_calendar_outline.svg'),
                     selectedIcon: _NavBarSvg(asset: 'assets/vectors/nav_calendar_filled.svg'),
-                    label: 'Matches',
+                    label: 'Events',
                   ),
                   NavigationDestination(
                     icon: _NavBarSvg(asset: 'assets/vectors/nav_profile_outline.svg'),
@@ -685,11 +696,13 @@ class _HomeHeroHeader extends StatelessWidget {
     required this.greeting,
     required this.firstName,
     required this.dateLine,
+    required this.tagline,
   });
 
   final String greeting;
   final String firstName;
   final String dateLine;
+  final String tagline;
 
   @override
   Widget build(BuildContext context) {
@@ -812,7 +825,7 @@ class _HomeHeroHeader extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Find your next game nearby',
+                      tagline,
                       style: theme.textTheme.bodyLarge?.copyWith(
                         color: Colors.white.withValues(alpha: 0.78),
                         fontWeight: FontWeight.w500,
@@ -902,7 +915,7 @@ class _FloatingSearchFieldState extends State<_FloatingSearchField> {
         ),
         decoration: InputDecoration(
           hoverColor: Colors.transparent,
-          hintText: 'Search sports, venues, matches…',
+          hintText: 'Search sports, venues, events…',
           hintStyle: TextStyle(
             color: SportsAppColors.textMuted.withValues(alpha: 0.75),
             fontWeight: FontWeight.w500,
@@ -1240,22 +1253,24 @@ class _ProfileTab extends StatelessWidget {
                             clipBehavior: Clip.antiAlias,
                             child: Column(
                               children: [
-                                _ProfileMenuRow(
-                                  icon: Icons.event_note_outlined,
-                                  label: 'My bookings',
-                                  showTopDivider: false,
-                                  onTap: () {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('Bookings list coming soon.'),
-                                      ),
-                                    );
-                                  },
-                                ),
+                                if (!user.isOrganizer)
+                                  _ProfileMenuRow(
+                                    icon: Icons.event_note_outlined,
+                                    label: 'My bookings',
+                                    showTopDivider: false,
+                                    onTap: () {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute<void>(
+                                          builder: (_) =>
+                                              const MyBookingsScreen(),
+                                        ),
+                                      );
+                                    },
+                                  ),
                                 _ProfileMenuRow(
                                   icon: Icons.notifications_outlined,
                                   label: 'Notifications',
-                                  showTopDivider: true,
+                                  showTopDivider: user.isOrganizer ? false : true,
                                   onTap: () {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       const SnackBar(
@@ -1387,7 +1402,7 @@ class _ProfileMenuRow extends StatelessWidget {
   }
 }
 
-/// Schedule-style matches view (date strip + grouped list), aligned with common
+/// Schedule-style events view (date strip + grouped list), aligned with common
 /// fixture / calendar apps (day chips, time-first rows, status badges).
 class _MatchesTab extends StatefulWidget {
   const _MatchesTab({
@@ -1484,7 +1499,7 @@ class _MatchesTabState extends State<_MatchesTab> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Matches',
+                    'Events',
                     style: theme.textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w900,
                       fontSize: 17,
@@ -1494,7 +1509,7 @@ class _MatchesTabState extends State<_MatchesTab> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Browse by day — tap a date to filter',
+                    'Browse events by day — tap a date to filter',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: SportsAppColors.textMuted,
                       fontWeight: FontWeight.w500,
@@ -1896,7 +1911,7 @@ class _MatchScheduleRow extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${event.sportType} · ${distanceKm.toStringAsFixed(1)} km · \$${event.price.toStringAsFixed(0)}',
+                      '${event.sportType} · ${distanceKm.toStringAsFixed(1)} km · ${formatInr(event.price)}',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: SportsAppColors.textMuted,
                         fontWeight: FontWeight.w600,
@@ -1958,7 +1973,7 @@ class _MatchesEmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              hasFilters ? 'No matches match your filters' : 'No matches yet',
+              hasFilters ? 'No events match your filters' : 'No events yet',
               textAlign: TextAlign.center,
               style: theme.textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.w800,
@@ -2434,7 +2449,7 @@ class _HorizontalMatchCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        '$timeStr · ${distanceKm.toStringAsFixed(1)} km · \$${event.price.toStringAsFixed(0)}',
+                        '$timeStr · ${distanceKm.toStringAsFixed(1)} km · ${formatInr(event.price)}',
                         style: theme.textTheme.labelMedium?.copyWith(
                           color: Colors.white.withValues(alpha: 0.92),
                           fontWeight: FontWeight.w600,
@@ -2625,7 +2640,7 @@ class _EventListTileCard extends StatelessWidget {
                         ),
                         const Spacer(),
                         Text(
-                          '\$${event.price.toStringAsFixed(2)}',
+                          formatInr(event.price),
                           style: theme.textTheme.titleSmall?.copyWith(
                             color: SportsAppColors.textPrimary,
                             fontWeight: FontWeight.w900,

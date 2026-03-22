@@ -14,92 +14,6 @@ import '../theme/sports_app_theme.dart';
 import '../widgets/sports_components.dart';
 import 'matchup_detail_screen.dart';
 
-/// Shown when the API returns no bookings so you can preview the check-in UI.
-/// Negative [bookingId] marks demo rows (saves stay on-device only).
-const List<BookingPlayer> _kDummyDemoRoster = [
-  BookingPlayer(
-    bookingId: -1,
-    userId: 901,
-    name: 'Sam Okonkwo',
-    email: 'sam.ok@example.com',
-    paymentStatus: 'paid',
-    teamId: 1,
-    teamName: 'North District FC',
-    address: 'Gate A — north lot, Field 2',
-  ),
-  BookingPlayer(
-    bookingId: -2,
-    userId: 902,
-    name: 'Jordan Lee',
-    email: 'jordan@example.com',
-    paymentStatus: 'paid',
-    teamId: 1,
-    teamName: 'North District FC',
-  ),
-  BookingPlayer(
-    bookingId: -3,
-    userId: 903,
-    name: 'Robin Singh',
-    email: 'robin@example.com',
-    paymentStatus: 'paid',
-    teamId: 2,
-    teamName: 'Riverside United',
-  ),
-  BookingPlayer(
-    bookingId: -10,
-    userId: 910,
-    name: 'Alex Kim',
-    email: 'alex@example.com',
-    paymentStatus: 'paid',
-    teamId: 2,
-    teamName: 'Riverside United',
-  ),
-  BookingPlayer(
-    bookingId: -4,
-    userId: 904,
-    name: 'Priya Nair',
-    email: 'priya@example.com',
-    paymentStatus: 'paid',
-    teamId: 3,
-    teamName: 'City Youth',
-  ),
-  BookingPlayer(
-    bookingId: -5,
-    userId: 905,
-    name: 'Diego Flores',
-    email: 'diego@example.com',
-    paymentStatus: 'paid',
-    teamId: 3,
-    teamName: 'City Youth',
-  ),
-  BookingPlayer(
-    bookingId: -6,
-    userId: 906,
-    name: 'Emma Wilson',
-    email: 'emma@example.com',
-    paymentStatus: 'pending',
-    teamId: 4,
-    teamName: 'Silchar Juniors',
-  ),
-  BookingPlayer(
-    bookingId: -7,
-    userId: 907,
-    name: 'Chris Park',
-    email: 'chris@example.com',
-    paymentStatus: 'paid',
-    teamId: 4,
-    teamName: 'Silchar Juniors',
-  ),
-  BookingPlayer(
-    bookingId: -8,
-    userId: 908,
-    name: 'Morgan Chen',
-    email: 'morgan@example.com',
-    paymentStatus: 'pending',
-    teamId: null,
-  ),
-];
-
 /// Organizer tools: scheduled matchups and registered squads.
 class OrganizerDashboard extends StatefulWidget {
   const OrganizerDashboard({
@@ -126,11 +40,6 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
   /// Organizer-scheduled pairings (UI-only; wire to API later).
   final List<OrganizerMatchup> _matchups = [];
 
-  List<BookingPlayer> get _rosterRows =>
-      _players.isNotEmpty ? _players : _kDummyDemoRoster;
-
-  bool get _usingDummyRoster => _players.isEmpty;
-
   Map<int, List<BookingPlayer>> _groupByTeamId(List<BookingPlayer> rows) {
     final m = <int, List<BookingPlayer>>{};
     for (final p in rows) {
@@ -153,7 +62,7 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
   }
 
   List<({int teamId, String name})> _squadsForMatchupPicker() {
-    final byTeam = _groupByTeamId(_rosterRows);
+    final byTeam = _groupByTeamId(_players);
     final ids = byTeam.keys.toList()..sort();
     return ids
         .map(
@@ -875,46 +784,55 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
     );
   }
 
-  Widget _buildPreviewBanner(ThemeData theme) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: SportsAppColors.cyan.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: SportsAppColors.cyan.withValues(alpha: 0.28),
+  List<Widget> _buildCheckInMatchupSections(ThemeData theme) {
+    final rows = _players;
+    if (rows.isEmpty) {
+      return [
+        Padding(
+          padding: const EdgeInsets.only(top: 4, bottom: 12),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: sportsCardDecoration(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.groups_outlined,
+                      size: 24,
+                      color: SportsAppColors.cyan.withValues(alpha: 0.95),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'No registered squads yet',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w900,
+                          color: SportsAppColors.accentBlue900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'When players book this team event, their squads appear here for check-in. '
+                  'If you expect data, confirm the app is using the same API as your backend and pull to refresh.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: SportsAppColors.textMuted,
+                    fontWeight: FontWeight.w600,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(
-              Icons.auto_awesome_outlined,
-              size: 20,
-              color: SportsAppColors.cyan.withValues(alpha: 0.95),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'Sample roster: players are grouped by squad (football-style). '
-                'Live data from the server replaces this preview.',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: SportsAppColors.accentBlue900,
-                  fontWeight: FontWeight.w600,
-                  height: 1.35,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  List<Widget> _buildCheckInMatchupSections(ThemeData theme) {
-    final rows = _rosterRows;
+      ];
+    }
     final byTeam = _groupByTeamId(rows);
     final solos = rows.where((p) => p.teamId == null).toList();
     final teamIds = byTeam.keys.toList()..sort();
@@ -1141,7 +1059,6 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
           _buildScheduledMatchupsSection(theme),
-          if (_usingDummyRoster) _buildPreviewBanner(theme),
           ..._buildCheckInMatchupSections(theme),
         ],
       ),

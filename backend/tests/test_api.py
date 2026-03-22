@@ -208,6 +208,7 @@ def test_patch_me_location_and_create_event_me(client: TestClient) -> None:
 
     reg_open = datetime(2026, 6, 20, 9, 0, 0, tzinfo=timezone.utc)
     reg_close = datetime(2026, 7, 1, 19, 0, 0, tzinfo=timezone.utc)
+    match_start = datetime(2026, 7, 5, 18, 0, 0, tzinfo=timezone.utc)
     ev = client.post(
         "/events/me",
         headers={"Authorization": f"Bearer {token}"},
@@ -225,6 +226,7 @@ def test_patch_me_location_and_create_event_me(client: TestClient) -> None:
             "max_slots": 10,
             "registration_start": reg_open.isoformat().replace("+00:00", "Z"),
             "registration_end": reg_close.isoformat().replace("+00:00", "Z"),
+            "start_time": match_start.isoformat().replace("+00:00", "Z"),
             "status": 1,
             "extra_config": {"max_total_players": 40},
         },
@@ -252,6 +254,7 @@ def test_create_event_me_forbidden_for_player(client: TestClient) -> None:
     token = reg.json()["access_token"]
     reg_open = datetime(2026, 7, 1, 9, 0, 0, tzinfo=timezone.utc)
     reg_close = datetime(2026, 7, 1, 19, 0, 0, tzinfo=timezone.utc)
+    match_start = datetime(2026, 7, 3, 10, 0, 0, tzinfo=timezone.utc)
     r = client.post(
         "/events/me",
         headers={"Authorization": f"Bearer {token}"},
@@ -265,6 +268,7 @@ def test_create_event_me_forbidden_for_player(client: TestClient) -> None:
             "max_slots": 5,
             "registration_start": reg_open.isoformat().replace("+00:00", "Z"),
             "registration_end": reg_close.isoformat().replace("+00:00", "Z"),
+            "start_time": match_start.isoformat().replace("+00:00", "Z"),
             "status": 0,
         },
     )
@@ -332,6 +336,17 @@ def test_player_books_team_event_with_squad_name(client: TestClient) -> None:
     assert roster.status_code == 200
     assert len(roster.json()) == 1
 
+    mine = client.get(
+        "/me/bookings",
+        headers={"Authorization": f"Bearer {player_token}"},
+    )
+    assert mine.status_code == 200, mine.text
+    assert len(mine.json()) == 1
+    row = mine.json()[0]
+    assert row["booking_id"] == book.json()["booking_id"]
+    assert row["event"]["id"] == event_id
+    assert row["event"]["title"] == "Youth Cup"
+
 
 def test_create_event_player_not_organizer(client: TestClient) -> None:
     email = _unique_email()
@@ -361,3 +376,265 @@ def test_create_event_player_not_organizer(client: TestClient) -> None:
         },
     )
     assert r.status_code == 400
+
+
+def test_event_schedule_get_and_put(client: TestClient) -> None:
+    org = client.post(
+        "/auth/register",
+        json={
+            "name": "Org Sch",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "organizer",
+        },
+    )
+    assert org.status_code == 200
+    org_token = org.json()["access_token"]
+
+    p1 = client.post(
+        "/auth/register",
+        json={
+            "name": "P1",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    p2 = client.post(
+        "/auth/register",
+        json={
+            "name": "P2",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    t1 = p1.json()["access_token"]
+    t2 = p2.json()["access_token"]
+
+    reg_open = datetime(2026, 8, 1, 9, 0, 0, tzinfo=timezone.utc)
+    reg_close = datetime(2026, 8, 10, 19, 0, 0, tzinfo=timezone.utc)
+    match_start = datetime(2026, 8, 15, 10, 0, 0, tzinfo=timezone.utc)
+    ev = client.post(
+        "/events/me",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "title": "Cup",
+            "sport_type": "Soccer",
+            "venue_name": "Stadium",
+            "lat": 12.0,
+            "long": 77.0,
+            "price": 100.0,
+            "max_slots": 16,
+            "registration_start": reg_open.isoformat().replace("+00:00", "Z"),
+            "registration_end": reg_close.isoformat().replace("+00:00", "Z"),
+            "start_time": match_start.isoformat().replace("+00:00", "Z"),
+            "status": 1,
+            "registration_mode": "team",
+        },
+    )
+    assert ev.status_code == 200, ev.text
+    event_id = ev.json()["id"]
+
+    sch_empty = client.get(f"/events/{event_id}/schedule")
+    assert sch_empty.status_code == 200
+    assert sch_empty.json()["matches"] == []
+
+    b1 = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {t1}"},
+        json={"team_name": "Alpha FC"},
+    )
+    b2 = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {t2}"},
+        json={"team_name": "Beta FC"},
+    )
+    assert b1.status_code == 200
+    assert b2.status_code == 200
+    tid1 = b1.json()["team_id"]
+    tid2 = b2.json()["team_id"]
+
+    when = datetime(2026, 8, 12, 16, 30, 0, tzinfo=timezone.utc)
+    put = client.put(
+        f"/events/{event_id}/schedule",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "matches": [
+                {
+                    "id": 1,
+                    "round": "Semi-final",
+                    "home_team_id": tid1,
+                    "away_team_id": tid2,
+                    "home_team_name": "Alpha FC",
+                    "away_team_name": "Beta FC",
+                    "scheduled_at": when.isoformat().replace("+00:00", "Z"),
+                    "venue": "Pitch 1",
+                    "notes": "Knockout",
+                }
+            ]
+        },
+    )
+    assert put.status_code == 200, put.text
+    assert len(put.json()["matches"]) == 1
+
+    got = client.get(f"/events/{event_id}/schedule")
+    assert got.status_code == 200
+    m0 = got.json()["matches"][0]
+    assert m0["home_team_name"] == "Alpha FC"
+    assert m0["away_team_name"] == "Beta FC"
+    assert m0["venue"] == "Pitch 1"
+
+    bad = client.put(
+        f"/events/{event_id}/schedule",
+        headers={"Authorization": f"Bearer {t1}"},
+        json={"matches": []},
+    )
+    assert bad.status_code == 403
+
+
+def test_event_schedule_patch_and_delete_match(client: TestClient) -> None:
+    org = client.post(
+        "/auth/register",
+        json={
+            "name": "Org Patch",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "organizer",
+        },
+    )
+    assert org.status_code == 200
+    org_token = org.json()["access_token"]
+
+    p1 = client.post(
+        "/auth/register",
+        json={
+            "name": "Pa",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    p2 = client.post(
+        "/auth/register",
+        json={
+            "name": "Pb",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    t1 = p1.json()["access_token"]
+
+    reg_open = datetime(2026, 9, 1, 9, 0, 0, tzinfo=timezone.utc)
+    reg_close = datetime(2026, 9, 10, 19, 0, 0, tzinfo=timezone.utc)
+    match_start = datetime(2026, 9, 15, 10, 0, 0, tzinfo=timezone.utc)
+    ev = client.post(
+        "/events/me",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "title": "Patch Cup",
+            "sport_type": "Soccer",
+            "venue_name": "Stadium",
+            "lat": 12.0,
+            "long": 77.0,
+            "price": 100.0,
+            "max_slots": 16,
+            "registration_start": reg_open.isoformat().replace("+00:00", "Z"),
+            "registration_end": reg_close.isoformat().replace("+00:00", "Z"),
+            "start_time": match_start.isoformat().replace("+00:00", "Z"),
+            "status": 1,
+            "registration_mode": "team",
+        },
+    )
+    assert ev.status_code == 200, ev.text
+    event_id = ev.json()["id"]
+
+    b1 = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {t1}"},
+        json={"team_name": "Gamma FC"},
+    )
+    p2_tok = p2.json()["access_token"]
+    b2 = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {p2_tok}"},
+        json={"team_name": "Delta FC"},
+    )
+    assert b1.status_code == 200
+    assert b2.status_code == 200
+    tid1 = b1.json()["team_id"]
+    tid2 = b2.json()["team_id"]
+
+    when = datetime(2026, 9, 12, 16, 30, 0, tzinfo=timezone.utc)
+    put = client.put(
+        f"/events/{event_id}/schedule",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "matches": [
+                {
+                    "id": 1,
+                    "round": "R1",
+                    "home_team_id": tid1,
+                    "away_team_id": tid2,
+                    "home_team_name": "Gamma FC",
+                    "away_team_name": "Delta FC",
+                    "scheduled_at": when.isoformat().replace("+00:00", "Z"),
+                    "venue": "Pitch A",
+                    "notes": "First",
+                },
+                {
+                    "id": 2,
+                    "round": "R1",
+                    "home_team_id": tid2,
+                    "away_team_id": tid1,
+                    "home_team_name": "Delta FC",
+                    "away_team_name": "Gamma FC",
+                    "scheduled_at": when.isoformat().replace("+00:00", "Z"),
+                    "venue": "Pitch B",
+                    "notes": "Second",
+                },
+            ]
+        },
+    )
+    assert put.status_code == 200, put.text
+
+    patch = client.patch(
+        f"/events/{event_id}/schedule/matches/1",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "status": "finished",
+            "home_score": 2,
+            "away_score": 1,
+            "notes": "Full time",
+        },
+    )
+    assert patch.status_code == 200, patch.text
+    matches = patch.json()["matches"]
+    assert len(matches) == 2
+    m1 = next(m for m in matches if m["id"] == 1)
+    assert m1["status"] == "finished"
+    assert m1["home_score"] == 2
+    assert m1["away_score"] == 1
+    assert m1["notes"] == "Full time"
+
+    empty_patch = client.patch(
+        f"/events/{event_id}/schedule/matches/1",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={},
+    )
+    assert empty_patch.status_code == 400
+
+    delete = client.delete(
+        f"/events/{event_id}/schedule/matches/2",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert delete.status_code == 200
+    assert len(delete.json()["matches"]) == 1
+    assert delete.json()["matches"][0]["id"] == 1
+
+    missing = client.delete(
+        f"/events/{event_id}/schedule/matches/99",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert missing.status_code == 404

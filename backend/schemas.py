@@ -43,6 +43,8 @@ class EventCreateForOrganizer(BaseModel):
     max_slots: int = Field(..., ge=1)
     registration_start: datetime
     registration_end: datetime
+    #: When the match / session actually starts (distinct from registration window).
+    start_time: datetime
     status: int = Field(default=0, ge=0, le=4)
     age_group: str = Field(default="Open", max_length=50)
     competition_format: str = Field(default="knockout", max_length=40)
@@ -50,10 +52,22 @@ class EventCreateForOrganizer(BaseModel):
     extra_config: dict[str, Any] | None = Field(default=None)
 
     @model_validator(mode="after")
-    def registration_window(self) -> Self:
+    def registration_and_match_times(self) -> Self:
         if self.registration_end <= self.registration_start:
             raise ValueError("registration_end must be after registration_start")
+        if self.start_time <= self.registration_end:
+            raise ValueError("start_time must be after registration_end")
         return self
+
+
+class EventOrganizerPatch(BaseModel):
+    """Partial update for the event owner (join fee, registration, match time, prizes in extra_config)."""
+
+    price: float | None = Field(default=None, ge=0)
+    registration_start: datetime | None = None
+    registration_end: datetime | None = None
+    start_time: datetime | None = None
+    extra_config: dict[str, Any] | None = None
 
 
 class EventRead(BaseModel):
@@ -104,6 +118,17 @@ class BookingPlayerRead(BaseModel):
     address: str | None = None
 
 
+class MyBookingRead(BaseModel):
+    """Current user's booking with full event details (player home / My bookings)."""
+
+    booking_id: int
+    payment_status: str
+    team_id: int | None
+    team_name: str | None = None
+    address: str | None = None
+    event: EventRead
+
+
 class BookingCreatePlayer(BaseModel):
     """Book the current user onto an event (squad-based when registration_mode is team)."""
 
@@ -113,6 +138,50 @@ class BookingCreatePlayer(BaseModel):
 
 class BookingAddressUpdate(BaseModel):
     address: str | None = Field(default=None, max_length=500)
+
+
+MatchStatus = Literal["scheduled", "live", "finished", "postponed", "cancelled"]
+
+
+class ScheduledMatchItem(BaseModel):
+    """One fixture (e.g. knockout round) stored under event.extra_config['scheduled_matches']."""
+
+    id: int = Field(..., ge=1, description="Stable id for UI editing (unique within the event)")
+    round: str | None = Field(default=None, max_length=80)
+    home_team_id: int = Field(..., ge=1)
+    away_team_id: int = Field(..., ge=1)
+    home_team_name: str = Field(..., max_length=120)
+    away_team_name: str = Field(..., max_length=120)
+    scheduled_at: datetime | None = None
+    venue: str | None = Field(default=None, max_length=255)
+    notes: str | None = Field(default=None, max_length=500)
+    status: MatchStatus | None = None
+    home_score: int | None = Field(default=None, ge=0)
+    away_score: int | None = Field(default=None, ge=0)
+
+
+class EventScheduleRead(BaseModel):
+    matches: list[ScheduledMatchItem]
+
+
+class EventSchedulePut(BaseModel):
+    matches: list[ScheduledMatchItem]
+
+
+class ScheduledMatchPatch(BaseModel):
+    """Partial update for a single fixture (merge into existing row)."""
+
+    round: str | None = Field(default=None, max_length=80)
+    home_team_id: int | None = Field(default=None, ge=1)
+    away_team_id: int | None = Field(default=None, ge=1)
+    home_team_name: str | None = Field(default=None, max_length=120)
+    away_team_name: str | None = Field(default=None, max_length=120)
+    scheduled_at: datetime | None = None
+    venue: str | None = Field(default=None, max_length=255)
+    notes: str | None = Field(default=None, max_length=500)
+    status: MatchStatus | None = None
+    home_score: int | None = Field(default=None, ge=0)
+    away_score: int | None = Field(default=None, ge=0)
 
 
 class RegisterRequest(BaseModel):

@@ -1,16 +1,18 @@
 """FastAPI application for the Sports Booking App."""
 
 import json
+from typing import Annotated
 import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from auth_utils import create_access_token, decode_access_token, hash_password, verify_password
 from database import SessionLocal, get_db, init_db
@@ -23,9 +25,15 @@ from schemas import (
     EventCreate,
     EventCreateForOrganizer,
     EventNearby,
+    EventOrganizerPatch,
     EventRead,
+    EventSchedulePut,
+    EventScheduleRead,
     EventUpdateStatus,
     LoginRequest,
+    ScheduledMatchItem,
+    ScheduledMatchPatch,
+    MyBookingRead,
     RegisterRequest,
     TokenResponse,
     UserLocationUpdate,
@@ -39,6 +47,9 @@ async def lifespan(app: FastAPI):
     _seed_demo_users_if_empty()
     _seed_demo_events_if_empty()
     _backfill_missing_password_hashes()
+    _seed_demo_knockout_schedule()
+    _seed_weekend_football_league()
+    _seed_sunset_football_7v7_squads()
     yield
 
 
@@ -53,6 +64,15 @@ def _backfill_missing_password_hashes() -> None:
             if u.password_hash is None and u.email in (
                 "organizer@example.com",
                 "player@example.com",
+                "player2@example.com",
+                "player3@example.com",
+                "player4@example.com",
+                "player5@example.com",
+                "player6@example.com",
+                "player7@example.com",
+                "player8@example.com",
+                *(f"wfl{i}@example.com" for i in range(1, 11)),
+                *(f"sf7v7_{i}@example.com" for i in range(1, 11)),
             ):
                 u.password_hash = demo
                 changed = True
@@ -160,6 +180,563 @@ def _seed_demo_events_if_empty() -> None:
         ]
         db.add_all(rows)
         db.commit()
+    finally:
+        db.close()
+
+
+def _seed_demo_knockout_schedule() -> None:
+    """Idempotent: one team tournament with squad bookings + published schedule (for UI testing)."""
+    db = SessionLocal()
+    try:
+        org = db.scalars(
+            select(User).where(User.email == "organizer@example.com")
+        ).first()
+        if org is None:
+            return
+
+        title = "Demo Knockout Cup (schedule test)"
+        ev = db.scalars(select(SportEvent).where(SportEvent.title == title)).first()
+        now = datetime.now(timezone.utc)
+        reg_open = now - timedelta(days=1)
+        reg_close = now + timedelta(days=30)
+        match_start = now + timedelta(days=45)
+
+        if ev is None:
+            ev = SportEvent(
+                organizer_id=org.id,
+                title=title,
+                sport_type="Football",
+                venue_name="Demo Stadium Field A",
+                description=(
+                    "Seeded knockout tournament with a published fixture list. "
+                    "Log in as organizer@example.com / demo123 to edit the schedule."
+                ),
+                duration_minutes=90,
+                skill_level="all",
+                contact_phone=None,
+                lat=37.7749,
+                long=-122.4194,
+                price=100.0,
+                max_slots=64,
+                booked_slots=0,
+                start_time=match_start,
+                registration_start=reg_open,
+                registration_end=reg_close,
+                status=EventStatus.OPEN.value,
+                age_group="Open",
+                competition_format="knockout",
+                registration_mode="team",
+                extra_config=None,
+            )
+            db.add(ev)
+            db.commit()
+            db.refresh(ev)
+
+        demo_pw = hash_password("demo123")
+        #: Eight squads (player@ … player8@) so the schedule can show multiple QF fixtures.
+        player_specs: list[tuple[str, str, str]] = [
+            ("player@example.com", "Demo Player", "North Stars"),
+            ("player2@example.com", "Riya Verma", "South United"),
+            ("player3@example.com", "Arjun Mehta", "East FC"),
+            ("player4@example.com", "Kavya Nair", "West Warriors"),
+            ("player5@example.com", "Vikram Singh", "Central City FC"),
+            ("player6@example.com", "Neha Kapoor", "Riverside Rangers"),
+            ("player7@example.com", "Rohit Das", "Hilltop Hawks"),
+            ("player8@example.com", "Ananya Iyer", "Coastal Comets"),
+        ]
+        players: list[User] = []
+        for email, name, _ in player_specs:
+            u = db.scalars(select(User).where(User.email == email)).first()
+            if u is None:
+                u = User(
+                    name=name,
+                    email=email,
+                    password_hash=demo_pw,
+                    role=UserRole.PLAYER,
+                    rating=3.5,
+                )
+                db.add(u)
+                db.commit()
+                db.refresh(u)
+            players.append(u)
+
+        booked_user_ids = {
+            b.user_id
+            for b in db.scalars(select(Booking).where(Booking.event_id == ev.id)).all()
+        }
+
+        for pl, (_, _, team_name) in zip(players, player_specs):
+            if pl.id in booked_user_ids:
+                continue
+            max_tid = db.scalar(
+                select(func.max(Booking.team_id)).where(Booking.event_id == ev.id)
+            )
+            next_tid = (max_tid or 0) + 1
+            db.add(
+                Booking(
+                    event_id=ev.id,
+                    user_id=pl.id,
+                    payment_status="pending",
+                    team_id=next_tid,
+                    team_name=team_name,
+                )
+            )
+        db.commit()
+        db.refresh(ev)
+
+        #: Extra roster rows on existing squads (same team_id; password demo123) — multi-player testing.
+        bench_specs: list[tuple[str, str, str]] = [
+            ("bench1@example.com", "Alex Bench", "North Stars"),
+            ("bench2@example.com", "Sam Porter", "North Stars"),
+            ("bench3@example.com", "Lee Chen", "South United"),
+        ]
+        booked_user_ids = {
+            b.user_id
+            for b in db.scalars(select(Booking).where(Booking.event_id == ev.id)).all()
+        }
+        for email, name, squad_name in bench_specs:
+            tid = db.scalar(
+                select(Booking.team_id)
+                .where(Booking.event_id == ev.id)
+                .where(Booking.team_name == squad_name)
+                .where(Booking.team_id.isnot(None))
+                .limit(1)
+            )
+            if tid is None:
+                continue
+            u = db.scalars(select(User).where(User.email == email)).first()
+            if u is None:
+                u = User(
+                    name=name,
+                    email=email,
+                    password_hash=demo_pw,
+                    role=UserRole.PLAYER,
+                    rating=3.5,
+                )
+                db.add(u)
+                db.commit()
+                db.refresh(u)
+            if u.id in booked_user_ids:
+                continue
+            db.add(
+                Booking(
+                    event_id=ev.id,
+                    user_id=u.id,
+                    payment_status="paid",
+                    team_id=tid,
+                    team_name=squad_name,
+                )
+            )
+            booked_user_ids.add(u.id)
+        db.commit()
+        db.refresh(ev)
+
+        if ev.max_slots < 64:
+            ev.max_slots = 64
+
+        ev.booked_slots = int(
+            db.scalar(
+                select(func.count(Booking.id)).where(Booking.event_id == ev.id)
+            )
+            or 0
+        )
+        db.commit()
+        db.refresh(ev)
+
+        rows = db.execute(
+            select(Booking.team_id, Booking.team_name)
+            .where(Booking.event_id == ev.id)
+            .where(Booking.team_id.isnot(None))
+            .order_by(Booking.id)
+        ).all()
+        team_map: dict[int, str] = {}
+        for tid, tname in rows:
+            if tid is None or tid in team_map:
+                continue
+            team_map[tid] = (tname or "").strip() or f"Team {tid}"
+        ids_sorted = sorted(team_map.keys())
+        n_teams = len(ids_sorted)
+
+        base = dict(ev.extra_config or {})
+        demo_schedule_v = 4
+        # Rebuild when version bumps, fixtures missing, or squad count changes (new seed teams).
+        skip_schedule = (
+            base.get("schedule_demo_version") == demo_schedule_v
+            and isinstance(base.get("scheduled_matches"), list)
+            and len(base["scheduled_matches"]) > 0
+            and base.get("schedule_demo_team_count") == n_teams
+        )
+        if skip_schedule:
+            return
+
+        if n_teams < 2:
+            return
+
+        # Pair squads (1v2, 3v4, …). Odd team out has no seeded fixture.
+        matches: list[dict] = []
+        for i in range(0, len(ids_sorted) - 1, 2):
+            ha, aw = ids_sorted[i], ids_sorted[i + 1]
+            mid = len(matches) + 1
+            kick = now + timedelta(days=5 + mid * 2)
+            pitch = (mid - 1) % 4 + 1
+            matches.append(
+                {
+                    "id": mid,
+                    "round": "Quarter-final",
+                    "home_team_id": ha,
+                    "away_team_id": aw,
+                    "home_team_name": team_map[ha],
+                    "away_team_name": team_map[aw],
+                    "scheduled_at": kick.isoformat().replace("+00:00", "Z"),
+                    "venue": f"Pitch {pitch} — Demo Stadium",
+                    "notes": f"Seeded demo QF — match {mid}",
+                }
+            )
+
+        base["scheduled_matches"] = matches
+        base["schedule_demo_version"] = demo_schedule_v
+        base["schedule_demo_team_count"] = n_teams
+        ev.extra_config = base
+        db.commit()
+    finally:
+        db.close()
+
+
+def _seed_weekend_football_league() -> None:
+    """Idempotent: team-mode league with 10 booked squads (fixture / schedule testing)."""
+    db = SessionLocal()
+    try:
+        org = db.scalars(
+            select(User).where(User.email == "organizer@example.com")
+        ).first()
+        if org is None:
+            return
+
+        title = "Weekend Football League"
+        ev = db.scalars(select(SportEvent).where(SportEvent.title == title)).first()
+        now = datetime.now(timezone.utc)
+        reg_open = now - timedelta(days=2)
+        reg_close = now + timedelta(days=60)
+        season_start = now + timedelta(days=14)
+
+        if ev is None:
+            ev = SportEvent(
+                organizer_id=org.id,
+                title=title,
+                sport_type="Football",
+                venue_name="Marina Community Pitch",
+                description=(
+                    "Seeded weekend league (10 squads). Log in as organizer@example.com / demo123. "
+                    "Captains: wfl1@ … wfl10@example.com / demo123."
+                ),
+                duration_minutes=90,
+                skill_level="all",
+                contact_phone=None,
+                lat=37.8050,
+                long=-122.4320,
+                price=45.0,
+                max_slots=48,
+                booked_slots=0,
+                start_time=season_start,
+                registration_start=reg_open,
+                registration_end=reg_close,
+                status=EventStatus.OPEN.value,
+                age_group="Open",
+                competition_format="league",
+                registration_mode="team",
+                extra_config=None,
+            )
+            db.add(ev)
+            db.commit()
+            db.refresh(ev)
+
+        demo_pw = hash_password("demo123")
+        #: One captain booking per squad — 10 teams total.
+        squad_specs: list[tuple[str, str, str]] = [
+            ("wfl1@example.com", "Chris A", "Riverside AFC"),
+            ("wfl2@example.com", "Ben K", "Bay City FC"),
+            ("wfl3@example.com", "Maya L", "Mission Strikers"),
+            ("wfl4@example.com", "Jordan P", "Presidio United"),
+            ("wfl5@example.com", "Taylor R", "SOMA Athletic"),
+            ("wfl6@example.com", "Sam V", "Castro FC"),
+            ("wfl7@example.com", "Riley N", "Noe Valley Vets"),
+            ("wfl8@example.com", "Casey M", "Dogpatch Dynamo"),
+            ("wfl9@example.com", "Quinn D", "Richmond Rovers"),
+            ("wfl10@example.com", "Jamie F", "Excelsior Eleven"),
+        ]
+        captains: list[User] = []
+        for email, name, _ in squad_specs:
+            u = db.scalars(select(User).where(User.email == email)).first()
+            if u is None:
+                u = User(
+                    name=name,
+                    email=email,
+                    password_hash=demo_pw,
+                    role=UserRole.PLAYER,
+                    rating=3.5,
+                )
+                db.add(u)
+                db.commit()
+                db.refresh(u)
+            captains.append(u)
+
+        booked_user_ids = {
+            b.user_id
+            for b in db.scalars(select(Booking).where(Booking.event_id == ev.id)).all()
+        }
+
+        for pl, (_, _, team_name) in zip(captains, squad_specs):
+            if pl.id in booked_user_ids:
+                continue
+            max_tid = db.scalar(
+                select(func.max(Booking.team_id)).where(Booking.event_id == ev.id)
+            )
+            next_tid = (max_tid or 0) + 1
+            db.add(
+                Booking(
+                    event_id=ev.id,
+                    user_id=pl.id,
+                    payment_status="paid",
+                    team_id=next_tid,
+                    team_name=team_name,
+                )
+            )
+        db.commit()
+        db.refresh(ev)
+
+        ev.booked_slots = int(
+            db.scalar(
+                select(func.count(Booking.id)).where(Booking.event_id == ev.id)
+            )
+            or 0
+        )
+        if ev.max_slots < 48:
+            ev.max_slots = 48
+        db.commit()
+        db.refresh(ev)
+
+        rows = db.execute(
+            select(Booking.team_id, Booking.team_name)
+            .where(Booking.event_id == ev.id)
+            .where(Booking.team_id.isnot(None))
+            .order_by(Booking.id)
+        ).all()
+        team_map: dict[int, str] = {}
+        for tid, tname in rows:
+            if tid is None or tid in team_map:
+                continue
+            team_map[tid] = (tname or "").strip() or f"Team {tid}"
+        ids_sorted = sorted(team_map.keys())
+        n_teams = len(ids_sorted)
+
+        base = dict(ev.extra_config or {})
+        wfl_sched_v = 1
+        skip_schedule = (
+            base.get("wfl_schedule_seed_version") == wfl_sched_v
+            and isinstance(base.get("scheduled_matches"), list)
+            and len(base["scheduled_matches"]) > 0
+            and base.get("wfl_schedule_team_count") == n_teams
+        )
+        if skip_schedule or n_teams < 2:
+            return
+
+        matches: list[dict] = []
+        for i in range(0, len(ids_sorted) - 1, 2):
+            ha, aw = ids_sorted[i], ids_sorted[i + 1]
+            mid = len(matches) + 1
+            kick = now + timedelta(days=7 + mid)
+            pitch = (mid - 1) % 3 + 1
+            matches.append(
+                {
+                    "id": mid,
+                    "round": "League — Matchday 1",
+                    "home_team_id": ha,
+                    "away_team_id": aw,
+                    "home_team_name": team_map[ha],
+                    "away_team_name": team_map[aw],
+                    "scheduled_at": kick.isoformat().replace("+00:00", "Z"),
+                    "venue": f"Field {pitch} — Marina Community Pitch",
+                    "notes": f"Seeded WFL — MD1 match {mid}",
+                }
+            )
+
+        base["scheduled_matches"] = matches
+        base["wfl_schedule_seed_version"] = wfl_sched_v
+        base["wfl_schedule_team_count"] = n_teams
+        ev.extra_config = base
+        db.commit()
+    finally:
+        db.close()
+
+
+def _seed_sunset_football_7v7_squads() -> None:
+    """Idempotent: real squad rows for the generic demo listing 'Sunset Football 7v7' (roster + matchup tests)."""
+    db = SessionLocal()
+    try:
+        org = db.scalars(
+            select(User).where(User.email == "organizer@example.com")
+        ).first()
+        if org is None:
+            return
+
+        title = "Sunset Football 7v7"
+        ev = db.scalars(
+            select(SportEvent).where(func.trim(SportEvent.title) == title.strip())
+        ).first()
+        now = datetime.now(timezone.utc)
+        if ev is None:
+            reg_open = now - timedelta(days=1)
+            reg_close = now + timedelta(days=30)
+            ev = SportEvent(
+                organizer_id=org.id,
+                title=title,
+                sport_type="Football",
+                venue_name="Demo venue",
+                description=(
+                    "Seeded 7v7 demo — squads for schedule editor tests. "
+                    "Captains: sf7v7_1@ … sf7v7_10@example.com / demo123."
+                ),
+                duration_minutes=90,
+                skill_level="all",
+                contact_phone=None,
+                lat=37.7749,
+                long=-122.4194,
+                price=18.0,
+                max_slots=40,
+                booked_slots=0,
+                start_time=now + timedelta(hours=1),
+                registration_start=reg_open,
+                registration_end=reg_close,
+                status=EventStatus.OPEN.value,
+                age_group="Open",
+                competition_format="knockout",
+                registration_mode="team",
+                extra_config=None,
+            )
+            db.add(ev)
+            db.commit()
+            db.refresh(ev)
+        if ev.organizer_id != org.id:
+            ev.organizer_id = org.id
+        ev.registration_mode = "team"
+        ev.competition_format = "knockout"
+        if ev.registration_start is None:
+            ev.registration_start = now - timedelta(days=1)
+        if ev.registration_end is None:
+            ev.registration_end = now + timedelta(days=30)
+        if ev.max_slots < 40:
+            ev.max_slots = 40
+
+        demo_pw = hash_password("demo123")
+        #: Ten squads so the schedule editor always has enough pairs for fixtures.
+        squad_specs: list[tuple[str, str, str]] = [
+            ("sf7v7_1@example.com", "Alex R", "Sunset Reds"),
+            ("sf7v7_2@example.com", "Jordan M", "Ocean Blues"),
+            ("sf7v7_3@example.com", "Sam T", "Fog FC"),
+            ("sf7v7_4@example.com", "Casey L", "Bridge United"),
+            ("sf7v7_5@example.com", "Riley K", "Park Rangers"),
+            ("sf7v7_6@example.com", "Morgan P", "Marina Stars"),
+            ("sf7v7_7@example.com", "Drew H", "Hilltop 7"),
+            ("sf7v7_8@example.com", "Jamie V", "Valencia Vipers"),
+            ("sf7v7_9@example.com", "Noah W", "Pacific FC"),
+            ("sf7v7_10@example.com", "Sky S", "Embarcadero Eleven"),
+        ]
+        captains: list[User] = []
+        for email, name, _ in squad_specs:
+            u = db.scalars(select(User).where(User.email == email)).first()
+            if u is None:
+                u = User(
+                    name=name,
+                    email=email,
+                    password_hash=demo_pw,
+                    role=UserRole.PLAYER,
+                    rating=3.5,
+                )
+                db.add(u)
+                db.commit()
+                db.refresh(u)
+            captains.append(u)
+
+        booked_user_ids = {
+            b.user_id
+            for b in db.scalars(select(Booking).where(Booking.event_id == ev.id)).all()
+        }
+
+        for pl, (_, _, team_name) in zip(captains, squad_specs):
+            if pl.id in booked_user_ids:
+                continue
+            max_tid = db.scalar(
+                select(func.max(Booking.team_id)).where(Booking.event_id == ev.id)
+            )
+            next_tid = (max_tid or 0) + 1
+            db.add(
+                Booking(
+                    event_id=ev.id,
+                    user_id=pl.id,
+                    payment_status="paid",
+                    team_id=next_tid,
+                    team_name=team_name,
+                )
+            )
+        db.commit()
+        db.refresh(ev)
+
+        ev.booked_slots = int(
+            db.scalar(
+                select(func.count(Booking.id)).where(Booking.event_id == ev.id)
+            )
+            or 0
+        )
+        db.commit()
+        db.refresh(ev)
+
+        rows = db.execute(
+            select(Booking.team_id, Booking.team_name)
+            .where(Booking.event_id == ev.id)
+            .where(Booking.team_id.isnot(None))
+            .order_by(Booking.id)
+        ).all()
+        team_map: dict[int, str] = {}
+        for tid, tname in rows:
+            if tid is None or tid in team_map:
+                continue
+            team_map[tid] = (tname or "").strip() or f"Team {tid}"
+        ids_sorted = sorted(team_map.keys())
+        n_teams = len(ids_sorted)
+
+        base = dict(ev.extra_config or {})
+        sunset_v = 2
+        skip_schedule = (
+            base.get("sunset_sf7_schedule_seed_version") == sunset_v
+            and isinstance(base.get("scheduled_matches"), list)
+            and len(base["scheduled_matches"]) > 0
+            and base.get("sunset_sf7_team_count") == n_teams
+        )
+        if not skip_schedule and n_teams >= 2:
+            matches: list[dict] = []
+            for i in range(0, len(ids_sorted) - 1, 2):
+                ha, aw = ids_sorted[i], ids_sorted[i + 1]
+                mid = len(matches) + 1
+                kick = now + timedelta(days=3 + mid * 2)
+                pitch = (mid - 1) % 2 + 1
+                matches.append(
+                    {
+                        "id": mid,
+                        "round": "Quarter-final",
+                        "home_team_id": ha,
+                        "away_team_id": aw,
+                        "home_team_name": team_map[ha],
+                        "away_team_name": team_map[aw],
+                        "scheduled_at": kick.isoformat().replace("+00:00", "Z"),
+                        "venue": f"Synthetic pitch {pitch} — Demo venue",
+                        "notes": f"Seeded Sunset 7v7 — QF {mid}",
+                    }
+                )
+            base["scheduled_matches"] = matches
+            base["sunset_sf7_schedule_seed_version"] = sunset_v
+            base["sunset_sf7_team_count"] = n_teams
+            ev.extra_config = base
+            db.commit()
     finally:
         db.close()
 
@@ -387,7 +964,7 @@ def create_my_event(
         price=payload.price,
         max_slots=payload.max_slots,
         booked_slots=0,
-        start_time=payload.registration_end,
+        start_time=payload.start_time,
         registration_start=payload.registration_start,
         registration_end=payload.registration_end,
         status=payload.status,
@@ -497,12 +1074,234 @@ def list_my_events(
     return list(db.scalars(stmt).all())
 
 
+@app.get("/me/bookings", response_model=list[MyBookingRead])
+def list_my_bookings(
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[MyBookingRead]:
+    """All events the signed-in player has booked (newest match time first)."""
+    if current.role != UserRole.PLAYER:
+        raise HTTPException(status_code=403, detail="Only players can list their bookings")
+    stmt = (
+        select(Booking, SportEvent)
+        .join(SportEvent, Booking.event_id == SportEvent.id)
+        .where(Booking.user_id == current.id)
+        .order_by(SportEvent.start_time.desc())
+    )
+    rows = db.execute(stmt).all()
+    return [
+        MyBookingRead(
+            booking_id=b.id,
+            payment_status=b.payment_status,
+            team_id=b.team_id,
+            team_name=b.team_name,
+            address=b.checkin_address,
+            event=EventRead.model_validate(ev),
+        )
+        for b, ev in rows
+    ]
+
+
 @app.get("/events/{event_id}", response_model=EventRead)
 def get_event(event_id: int, db: Session = Depends(get_db)) -> SportEvent:
     ev = db.get(SportEvent, event_id)
     if ev is None:
         raise HTTPException(status_code=404, detail="Event not found")
     return ev
+
+
+def _team_registry_for_event(db: Session, event_id: int) -> dict[int, str]:
+    """First booking per team_id wins for display name."""
+    rows = db.execute(
+        select(Booking.team_id, Booking.team_name, Booking.id)
+        .where(Booking.event_id == event_id)
+        .where(Booking.team_id.isnot(None))
+        .order_by(Booking.id)
+    ).all()
+    out: dict[int, str] = {}
+    for tid, name, _ in rows:
+        if tid is None or tid in out:
+            continue
+        out[tid] = (name or "").strip() or f"Team {tid}"
+    return out
+
+
+def _schedule_sort_key(m: ScheduledMatchItem) -> tuple:
+    """Unscheduled fixtures sort last; then by kickoff; then by id."""
+    ts = m.scheduled_at
+    if ts is None:
+        return (1, datetime.max.replace(tzinfo=timezone.utc), m.id)
+    return (0, ts, m.id)
+
+
+def _schedule_items_from_event(ev: SportEvent) -> list[ScheduledMatchItem]:
+    """Parse and validate `extra_config.scheduled_matches`, ordered for display."""
+    raw = (ev.extra_config or {}).get("scheduled_matches")
+    if not raw or not isinstance(raw, list):
+        return []
+    matches: list[ScheduledMatchItem] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        try:
+            matches.append(ScheduledMatchItem.model_validate(row))
+        except Exception:
+            continue
+    return sorted(matches, key=_schedule_sort_key)
+
+
+def _require_organizer_schedule_access(ev: SportEvent, current: User) -> None:
+    if current.role != UserRole.ORGANIZER:
+        raise HTTPException(status_code=403, detail="Only organizers can modify the schedule")
+    if ev.organizer_id != current.id:
+        raise HTTPException(status_code=403, detail="Only the event owner can edit the schedule")
+    if (ev.registration_mode or "individual").strip().lower() != "team":
+        raise HTTPException(status_code=400, detail="Schedule applies to team/squad events only")
+
+
+def _validate_fixture_teams(m: ScheduledMatchItem, team_ids: set[int]) -> None:
+    if m.home_team_id == m.away_team_id:
+        raise HTTPException(status_code=400, detail="Home and away must be different teams")
+    if m.home_team_id not in team_ids or m.away_team_id not in team_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Each team id must match a registered squad for this event",
+        )
+
+
+@app.get("/events/{event_id}/schedule", response_model=EventScheduleRead)
+def get_event_schedule(event_id: int, db: Session = Depends(get_db)) -> EventScheduleRead:
+    """Public: squad vs squad fixtures set by the organizer (`extra_config.scheduled_matches`)."""
+    ev = db.get(SportEvent, event_id)
+    if ev is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return EventScheduleRead(matches=_schedule_items_from_event(ev))
+
+
+@app.put("/events/{event_id}/schedule", response_model=EventScheduleRead)
+def put_event_schedule(
+    event_id: int,
+    payload: EventSchedulePut,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EventScheduleRead:
+    """Owner-only: replace the full fixture list (team events only)."""
+    ev = db.get(SportEvent, event_id)
+    if ev is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    _require_organizer_schedule_access(ev, current)
+
+    teams = _team_registry_for_event(db, event_id)
+    team_ids = set(teams.keys())
+    if not team_ids and payload.matches:
+        raise HTTPException(
+            status_code=400,
+            detail="Register at least two squads before adding fixtures",
+        )
+
+    seen: set[int] = set()
+    for m in payload.matches:
+        if m.id in seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate match id {m.id}")
+        seen.add(m.id)
+        _validate_fixture_teams(m, team_ids)
+
+    serialized = [m.model_dump(mode="json") for m in payload.matches]
+
+    base = dict(ev.extra_config or {})
+    base["scheduled_matches"] = serialized
+    ev.extra_config = base
+    db.commit()
+    db.refresh(ev)
+    return EventScheduleRead(matches=_schedule_items_from_event(ev))
+
+
+@app.patch("/events/{event_id}/schedule/matches/{match_id}", response_model=EventScheduleRead)
+def patch_event_schedule_match(
+    event_id: int,
+    match_id: Annotated[int, Path(ge=1)],
+    payload: ScheduledMatchPatch,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EventScheduleRead:
+    """Owner-only: merge fields into one fixture (e.g. score, status, kickoff)."""
+    ev = db.get(SportEvent, event_id)
+    if ev is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    _require_organizer_schedule_access(ev, current)
+
+    patch_data = payload.model_dump(mode="json", exclude_unset=True)
+    if not patch_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    base = dict(ev.extra_config or {})
+    raw_list = base.get("scheduled_matches")
+    if not isinstance(raw_list, list):
+        raw_list = []
+
+    idx: int | None = None
+    row_dict: dict | None = None
+    for i, row in enumerate(raw_list):
+        if isinstance(row, dict) and row.get("id") == match_id:
+            idx = i
+            row_dict = dict(row)
+            break
+    if idx is None or row_dict is None:
+        raise HTTPException(status_code=404, detail="Match not found on this schedule")
+
+    merged = {**row_dict, **patch_data}
+    merged["id"] = match_id
+    try:
+        item = ScheduledMatchItem.model_validate(merged)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid fixture data: {e}") from e
+
+    teams = _team_registry_for_event(db, event_id)
+    team_ids = set(teams.keys())
+    _validate_fixture_teams(item, team_ids)
+
+    raw_list[idx] = item.model_dump(mode="json")
+    base["scheduled_matches"] = raw_list
+    ev.extra_config = base
+    flag_modified(ev, "extra_config")
+    db.commit()
+    db.refresh(ev)
+    return EventScheduleRead(matches=_schedule_items_from_event(ev))
+
+
+@app.delete("/events/{event_id}/schedule/matches/{match_id}", response_model=EventScheduleRead)
+def delete_event_schedule_match(
+    event_id: int,
+    match_id: Annotated[int, Path(ge=1)],
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EventScheduleRead:
+    """Owner-only: remove one fixture from the published schedule."""
+    ev = db.get(SportEvent, event_id)
+    if ev is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    _require_organizer_schedule_access(ev, current)
+
+    base = dict(ev.extra_config or {})
+    raw_list = base.get("scheduled_matches")
+    if not isinstance(raw_list, list):
+        raw_list = []
+
+    before = len(raw_list)
+    raw_list = [
+        r
+        for r in raw_list
+        if not (isinstance(r, dict) and r.get("id") == match_id)
+    ]
+    if len(raw_list) == before:
+        raise HTTPException(status_code=404, detail="Match not found on this schedule")
+
+    base["scheduled_matches"] = raw_list
+    ev.extra_config = base
+    flag_modified(ev, "extra_config")
+    db.commit()
+    db.refresh(ev)
+    return EventScheduleRead(matches=_schedule_items_from_event(ev))
 
 
 @app.patch("/events/{event_id}", response_model=EventRead)
@@ -515,6 +1314,52 @@ def update_event_status(
     if ev is None:
         raise HTTPException(status_code=404, detail="Event not found")
     ev.status = payload.status
+    db.commit()
+    db.refresh(ev)
+    return ev
+
+
+@app.patch("/events/{event_id}/organizer", response_model=EventRead)
+def patch_event_as_organizer(
+    event_id: int,
+    payload: EventOrganizerPatch,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SportEvent:
+    """Owner-only: update join fee, registration window, match start, extra_config (e.g. prizes)."""
+    if current.role != UserRole.ORGANIZER:
+        raise HTTPException(status_code=403, detail="Only organizers can update events")
+    ev = db.get(SportEvent, event_id)
+    if ev is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if ev.organizer_id != current.id:
+        raise HTTPException(status_code=403, detail="Only the event owner can edit this listing")
+
+    if payload.price is not None:
+        ev.price = payload.price
+    if payload.registration_start is not None:
+        ev.registration_start = payload.registration_start
+    if payload.registration_end is not None:
+        ev.registration_end = payload.registration_end
+    if payload.start_time is not None:
+        ev.start_time = payload.start_time
+
+    rs = ev.registration_start
+    re = ev.registration_end
+    if rs is not None and re is not None and re <= rs:
+        raise HTTPException(status_code=400, detail="registration_end must be after registration_start")
+    if rs is not None and re is not None and ev.start_time <= re:
+        raise HTTPException(status_code=400, detail="Match start_time must be after registration closes")
+
+    if payload.extra_config is not None:
+        base = dict(ev.extra_config or {})
+        for k, v in payload.extra_config.items():
+            if v is None:
+                base.pop(k, None)
+            else:
+                base[k] = v
+        ev.extra_config = base or None
+
     db.commit()
     db.refresh(ev)
     return ev

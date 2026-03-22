@@ -25,8 +25,10 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
   final _venueController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _contactController = TextEditingController();
-  final _priceController = TextEditingController(text: '15');
+  final _priceController = TextEditingController(text: '500');
   final _slotsController = TextEditingController(text: '10');
+  final _prizeFirstController = TextEditingController();
+  final _prizeRunnerUpController = TextEditingController();
   final _oversController = TextEditingController(text: '20');
   final _ballsPerOverController = TextEditingController(text: '6');
   final _halfMinutesController = TextEditingController();
@@ -49,6 +51,7 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
   String _sport = 'Football';
   DateTime _registrationStart = DateTime.now().add(const Duration(hours: 1));
   DateTime _registrationEnd = DateTime.now().add(const Duration(days: 7, hours: 2));
+  late DateTime _matchStart;
   int _durationMinutes = 90;
   String _ageGroup = 'Open';
   String _competitionFormat = 'knockout';
@@ -111,13 +114,10 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
   bool _submitting = false;
   String? _error;
 
-  bool _isIndiaContext(BuildContext context, LocationProvider loc) {
-    final countryCode = Localizations.localeOf(context).countryCode;
-    if (countryCode != null && countryCode.toUpperCase() == 'IN') {
-      return true;
-    }
-    final addr = loc.addressDisplay.toLowerCase();
-    return addr.contains('india');
+  @override
+  void initState() {
+    super.initState();
+    _matchStart = _registrationEnd.add(const Duration(days: 2));
   }
 
   static IconData _iconForSport(String sport) {
@@ -178,6 +178,8 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
     _gamesToWinController.dispose();
     _maxTotalPlayersController.dispose();
     _tournamentTeamsController.dispose();
+    _prizeFirstController.dispose();
+    _prizeRunnerUpController.dispose();
     super.dispose();
   }
 
@@ -222,6 +224,14 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
       m['tournament_start_date'] =
           DateFormat('yyyy-MM-dd').format(_tournamentStartDate);
       m['tournament_end_date'] = DateFormat('yyyy-MM-dd').format(_tournamentEndDate);
+    }
+    final pf = double.tryParse(_prizeFirstController.text.trim());
+    if (pf != null && pf > 0) {
+      m['prize_first_inr'] = pf;
+    }
+    final pr = double.tryParse(_prizeRunnerUpController.text.trim());
+    if (pr != null && pr > 0) {
+      m['prize_runner_up_inr'] = pr;
     }
     if (m.isEmpty) {
       return null;
@@ -291,6 +301,42 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
           _registrationStart = _registrationEnd.subtract(const Duration(hours: 1));
         }
       }
+      if (!_matchStart.isAfter(_registrationEnd)) {
+        _matchStart = _registrationEnd.add(const Duration(hours: 1));
+      }
+    });
+  }
+
+  Future<void> _pickMatchDateTime() async {
+    final now = DateTime.now();
+    final current = _matchStart.isAfter(_registrationEnd) ? _matchStart : _registrationEnd.add(const Duration(hours: 1));
+    final date = await showDatePicker(
+      context: context,
+      initialDate: current.isBefore(now) ? now : current,
+      firstDate: DateTime(now.year, now.month, now.day),
+      lastDate: now.add(const Duration(days: 730)),
+    );
+    if (date == null || !mounted) {
+      return;
+    }
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(current),
+    );
+    if (time == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _matchStart = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        time.hour,
+        time.minute,
+      );
+      if (!_matchStart.isAfter(_registrationEnd)) {
+        _matchStart = _registrationEnd.add(const Duration(minutes: 1));
+      }
     });
   }
 
@@ -305,6 +351,12 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
     if (_registrationEnd.isBefore(now.subtract(const Duration(minutes: 1)))) {
       setState(() {
         _error = 'Registration end must be in the future.';
+      });
+      return false;
+    }
+    if (!_matchStart.isAfter(_registrationEnd)) {
+      setState(() {
+        _error = 'Match start must be after registration closes.';
       });
       return false;
     }
@@ -327,7 +379,7 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
     final price = double.tryParse(_priceController.text.trim());
     final slots = int.tryParse(_slotsController.text.trim());
     if (price == null || slots == null || slots < 1) {
-      setState(() => _error = 'Check price and capacity.');
+      setState(() => _error = 'Check join fee and capacity.');
       return;
     }
     if (_isTournament && _registrationMode == 'team') {
@@ -361,6 +413,7 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
       'max_slots': slots,
       'registration_start': _registrationStart.toUtc().toIso8601String(),
       'registration_end': _registrationEnd.toUtc().toIso8601String(),
+      'start_time': _matchStart.toUtc().toIso8601String(),
       'status': _status,
       'age_group': _ageGroup,
       'competition_format': _competitionFormat,
@@ -702,7 +755,6 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final loc = context.watch<LocationProvider>();
-    final isIndia = _isIndiaContext(context, loc);
     final locLoading = loc.loading;
 
     return Scaffold(
@@ -896,6 +948,14 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
                   leadingIcon: Icons.event_busy_rounded,
                   onTap: () => _pickRegistrationDateTime(isStart: false),
                 ),
+                const SizedBox(height: 12),
+                _buildRegistrationDateTimeTile(
+                  theme: theme,
+                  label: 'Match starts',
+                  at: _matchStart,
+                  leadingIcon: Icons.play_circle_outline_rounded,
+                  onTap: _pickMatchDateTime,
+                ),
                 const SizedBox(height: 14),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -907,8 +967,8 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
                           decimal: true,
                         ),
                         decoration: _fieldDecoration(
-                          isIndia ? 'Price (₹)' : 'Price (\$)',
-                          hint: isIndia ? '0 (INR)' : '0 (USD)',
+                          'Join fee (₹)',
+                          hint: 'Per team or player',
                         ),
                         validator: (v) {
                           final p = double.tryParse(v?.trim() ?? '');
@@ -937,6 +997,51 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
                           }
                           return null;
                         },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                const SportsSectionTitle(
+                  'Prize money (optional)',
+                  bottomSpacing: 10,
+                  color: SportsAppColors.accentBlue900,
+                ),
+                Text(
+                  'Set in Indian rupees (₹). Leave blank if there is no cash prize.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: SportsAppColors.textMuted,
+                    fontWeight: FontWeight.w500,
+                    height: 1.35,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _prizeFirstController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: _fieldDecoration(
+                          'Champion (1st)',
+                          hint: '₹',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _prizeRunnerUpController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: _fieldDecoration(
+                          'Runner-up (2nd)',
+                          hint: '₹',
+                        ),
                       ),
                     ),
                   ],

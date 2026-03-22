@@ -9,8 +9,12 @@ import '../config/api_config.dart';
 import '../models/sport_event.dart';
 import '../providers/auth_provider.dart';
 import '../theme/sports_app_theme.dart';
+import '../utils/inr_money.dart';
 import '../utils/reverse_geocode.dart';
 import '../widgets/sports_components.dart';
+import 'edit_event_screen.dart';
+import 'event_schedule_screen.dart';
+import 'organizer_dashboard.dart';
 
 String _skillLevelDisplay(String key) {
   switch (key.toLowerCase()) {
@@ -348,33 +352,17 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final hasRegWindow = _event.registrationStart != null &&
-        _event.registrationEnd != null;
-    late final String dateLine;
-    late final String timeLine;
-    late final String dateFactLabel;
-    late final String timeFactLabel;
-    if (hasRegWindow) {
-      final rs = _event.registrationStart!.toLocal();
-      final re = _event.registrationEnd!.toLocal();
-      dateLine = DateFormat('EEE, MMM d, y · h:mm a').format(rs);
-      timeLine = DateFormat('EEE, MMM d, y · h:mm a').format(re);
-      dateFactLabel = 'Registration opens';
-      timeFactLabel = 'Registration closes';
-    } else {
-      final local = _event.startTime.toLocal();
-      dateLine = DateFormat('EEEE, MMMM d, y').format(local);
-      timeLine = DateFormat('h:mm a').format(local);
-      dateFactLabel = 'Date';
-      timeFactLabel = 'Time';
-    }
+    final auth = context.watch<AuthProvider>();
+    final canEdit = auth.user != null &&
+        auth.user!.isOrganizer &&
+        auth.user!.id == _event.organizerId;
     final statusColor = _statusColor(_event.status);
 
     return Scaffold(
       backgroundColor: SportsAppColors.pageBackground,
       appBar: AppBar(
         title: Text(
-          'Match',
+          'Event',
           style: theme.textTheme.titleMedium?.copyWith(
             fontWeight: FontWeight.w900,
             fontSize: 17,
@@ -386,6 +374,24 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         backgroundColor: SportsAppColors.pageBackground,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
+        actions: [
+          if (canEdit)
+            IconButton(
+              tooltip: 'Edit listing',
+              onPressed: () async {
+                final ok = await Navigator.of(context).push<bool>(
+                  MaterialPageRoute<bool>(
+                    builder: (_) => EditEventScreen(event: _event),
+                  ),
+                );
+                if (ok == true && context.mounted) {
+                  await _reloadEvent();
+                }
+              },
+              icon: const Icon(Icons.edit_rounded),
+              color: SportsAppColors.accentBlue900,
+            ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
           child: Container(
@@ -415,6 +421,75 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                       formatLabel: _competitionFormatLabel(_event.competitionFormat),
                       teamEntries: _event.registrationMode == 'team',
                     ),
+                    if (_event.registrationMode == 'team') ...[
+                      const SizedBox(height: 16),
+                      FilledButton.tonal(
+                        onPressed: () {
+                          Navigator.of(context).push<void>(
+                            MaterialPageRoute<void>(
+                              builder: (_) => EventScheduleScreen(event: _event),
+                            ),
+                          );
+                        },
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(52),
+                          backgroundColor: SportsAppColors.cyan.withValues(alpha: 0.14),
+                          foregroundColor: SportsAppColors.accentBlue900,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.calendar_month_rounded, size: 22),
+                            const SizedBox(width: 10),
+                            Text(
+                              'Scheduled matches',
+                              style: theme.textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (canEdit) ...[
+                        const SizedBox(height: 12),
+                        FilledButton.tonal(
+                          onPressed: () {
+                            Navigator.of(context).push<void>(
+                              MaterialPageRoute<void>(
+                                builder: (_) => OrganizerDashboard(
+                                  eventId: _event.id,
+                                  event: _event,
+                                ),
+                              ),
+                            );
+                          },
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size.fromHeight(52),
+                            backgroundColor: SportsAppColors.accentWarm.withValues(alpha: 0.12),
+                            foregroundColor: SportsAppColors.accentBlue900,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.groups_rounded, size: 22),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Squads & roster',
+                                style: theme.textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
                     const SizedBox(height: 20),
                     const SportsSectionTitle(
                       'Details',
@@ -423,10 +498,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                     ),
                     _EventFactsCard(
                       event: _event,
-                      dateFactLabel: dateFactLabel,
-                      timeFactLabel: timeFactLabel,
-                      dateLine: dateLine,
-                      timeLine: timeLine,
                       slotsSummary: _slotsLine(_event),
                     ),
                     if (_event.description != null &&
@@ -460,6 +531,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           _EventDetailCtaBar(
             event: _event,
             booking: _booking,
+            isOrganizer: context.watch<AuthProvider>().user?.isOrganizer ?? false,
             onBook: _onBookPressed,
             onWaitlist: () {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -762,21 +834,23 @@ class _MapAddressRowState extends State<_MapAddressRow> {
   }
 }
 
+double? _readInrPrize(dynamic v) {
+  if (v == null) {
+    return null;
+  }
+  if (v is num) {
+    return v.toDouble();
+  }
+  return double.tryParse(v.toString());
+}
+
 class _EventFactsCard extends StatelessWidget {
   const _EventFactsCard({
     required this.event,
-    required this.dateFactLabel,
-    required this.timeFactLabel,
-    required this.dateLine,
-    required this.timeLine,
     required this.slotsSummary,
   });
 
   final SportEvent event;
-  final String dateFactLabel;
-  final String timeFactLabel;
-  final String dateLine;
-  final String timeLine;
   final String slotsSummary;
 
   @override
@@ -785,27 +859,47 @@ class _EventFactsCard extends StatelessWidget {
     final fillRatio = event.maxSlots > 0
         ? event.bookedSlots / event.maxSlots
         : 0.0;
+    final rs = event.registrationStart?.toLocal();
+    final re = event.registrationEnd?.toLocal();
+    final matchLocal = event.startTime.toLocal();
+    final prizeFirst = _readInrPrize(event.extraConfig?['prize_first_inr']);
+    final prizeRun = _readInrPrize(event.extraConfig?['prize_runner_up_inr']);
 
     return Container(
       decoration: sportsCardDecoration(),
       child: Column(
         children: [
+          if (rs != null) ...[
+            _FactRow(
+              icon: Icons.how_to_reg_rounded,
+              iconBg: SportsAppColors.cyan.withValues(alpha: 0.12),
+              label: 'Registration opens',
+              value: DateFormat('EEE, MMM d, y · h:mm a').format(rs),
+            ),
+            Divider(
+              height: 1,
+              indent: 58,
+              color: SportsAppColors.border.withValues(alpha: 0.9),
+            ),
+          ],
+          if (re != null) ...[
+            _FactRow(
+              icon: Icons.event_busy_rounded,
+              iconBg: SportsAppColors.cyan.withValues(alpha: 0.12),
+              label: 'Registration closes',
+              value: DateFormat('EEE, MMM d, y · h:mm a').format(re),
+            ),
+            Divider(
+              height: 1,
+              indent: 58,
+              color: SportsAppColors.border.withValues(alpha: 0.9),
+            ),
+          ],
           _FactRow(
-            icon: Icons.event_rounded,
+            icon: Icons.play_circle_outline_rounded,
             iconBg: SportsAppColors.cyan.withValues(alpha: 0.12),
-            label: dateFactLabel,
-            value: dateLine,
-          ),
-          Divider(
-            height: 1,
-            indent: 58,
-            color: SportsAppColors.border.withValues(alpha: 0.9),
-          ),
-          _FactRow(
-            icon: Icons.schedule_rounded,
-            iconBg: SportsAppColors.cyan.withValues(alpha: 0.12),
-            label: timeFactLabel,
-            value: timeLine,
+            label: 'Match starts',
+            value: DateFormat('EEE, MMM d, y · h:mm a').format(matchLocal),
           ),
           Divider(
             height: 1,
@@ -859,13 +953,47 @@ class _EventFactsCard extends StatelessWidget {
           _FactRow(
             icon: Icons.payments_rounded,
             iconBg: SportsAppColors.cyan.withValues(alpha: 0.12),
-            label: 'Price',
-            value: '\$${event.price.toStringAsFixed(2)}',
+            label: 'Join fee',
+            value: formatInr(event.price),
             valueStyle: theme.textTheme.titleMedium?.copyWith(
               fontWeight: FontWeight.w900,
               color: SportsAppColors.accentBlue900,
             ),
           ),
+          if (prizeFirst != null && prizeFirst > 0) ...[
+            Divider(
+              height: 1,
+              indent: 58,
+              color: SportsAppColors.border.withValues(alpha: 0.9),
+            ),
+            _FactRow(
+              icon: Icons.emoji_events_rounded,
+              iconBg: SportsAppColors.cyan.withValues(alpha: 0.12),
+              label: 'Prize · Champion',
+              value: formatInr(prizeFirst),
+              valueStyle: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w900,
+                color: SportsAppColors.accentBlue900,
+              ),
+            ),
+          ],
+          if (prizeRun != null && prizeRun > 0) ...[
+            Divider(
+              height: 1,
+              indent: 58,
+              color: SportsAppColors.border.withValues(alpha: 0.9),
+            ),
+            _FactRow(
+              icon: Icons.military_tech_rounded,
+              iconBg: SportsAppColors.cyan.withValues(alpha: 0.12),
+              label: 'Prize · Runner-up',
+              value: formatInr(prizeRun),
+              valueStyle: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w900,
+                color: SportsAppColors.accentBlue900,
+              ),
+            ),
+          ],
           Divider(
             height: 1,
             indent: 58,
@@ -1013,12 +1141,14 @@ class _EventDetailCtaBar extends StatelessWidget {
   const _EventDetailCtaBar({
     required this.event,
     required this.booking,
+    required this.isOrganizer,
     required this.onBook,
     required this.onWaitlist,
   });
 
   final SportEvent event;
   final bool booking;
+  final bool isOrganizer;
   final VoidCallback onBook;
   final VoidCallback onWaitlist;
 
@@ -1038,7 +1168,7 @@ class _EventDetailCtaBar extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (event.status == 1)
+              if (!isOrganizer && event.status == 1)
                 FilledButton(
                   onPressed: (event.isFull || booking) ? null : onBook,
                   style: FilledButton.styleFrom(
@@ -1073,7 +1203,7 @@ class _EventDetailCtaBar extends StatelessWidget {
                           ),
                         ),
                 ),
-              if (event.status == 2)
+              if (!isOrganizer && event.status == 2)
                 FilledButton.tonal(
                   onPressed: onWaitlist,
                   style: FilledButton.styleFrom(
@@ -1097,6 +1227,15 @@ class _EventDetailCtaBar extends StatelessWidget {
               if (event.status != 1 && event.status != 2)
                 Text(
                   _inactiveCtaMessage(event.status),
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: SportsAppColors.textMuted,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              if (isOrganizer && (event.status == 1 || event.status == 2))
+                Text(
+                  'Organizer view — manage this match from My events.',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: SportsAppColors.textMuted,
