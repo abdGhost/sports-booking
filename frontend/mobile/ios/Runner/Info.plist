@@ -47,5 +47,12 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Camera access is required to scan player QR codes at check-in.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Sports Booking uses your location to show nearby matches and set your default area on the map.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

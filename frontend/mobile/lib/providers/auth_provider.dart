@@ -90,7 +90,7 @@ class AuthProvider extends ChangeNotifier {
       await _applyAuthResponse(res.body);
       return true;
     } catch (e) {
-      lastError = e.toString();
+      lastError = _formatNetworkError(e);
       notifyListeners();
       return false;
     }
@@ -123,10 +123,24 @@ class AuthProvider extends ChangeNotifier {
       await _applyAuthResponse(res.body);
       return true;
     } catch (e) {
-      lastError = e.toString();
+      lastError = _formatNetworkError(e);
       notifyListeners();
       return false;
     }
+  }
+
+  static String _formatNetworkError(Object e) {
+    final s = e.toString();
+    if (s.contains('SocketException') ||
+        s.contains('Failed host lookup') ||
+        s.contains('Connection refused') ||
+        s.contains('Network is unreachable') ||
+        s.contains('timed out')) {
+      return 'Cannot reach the API at ${ApiConfig.baseUrl}. '
+          'On a physical phone use your PC Wi‑Fi IP, e.g. '
+          'flutter run --dart-define=API_HOST=192.168.1.x (same network as the PC).';
+    }
+    return s;
   }
 
   Future<void> _applyAuthResponse(String body) async {

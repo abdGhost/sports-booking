@@ -63,6 +63,13 @@ class SportEvent(Base):
     max_slots: Mapped[int] = mapped_column(Integer, nullable=False)
     booked_slots: Mapped[int] = mapped_column(Integer, default=0)
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: When registration opens / closes (organizer create flow). Optional for legacy rows.
+    registration_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    registration_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[int] = mapped_column(Integer, default=EventStatus.DRAFT.value)
     #: e.g. U12, U15, Open, 35+
     age_group: Mapped[str] = mapped_column(String(50), default="Open", nullable=False)

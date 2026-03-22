@@ -6,6 +6,7 @@ import 'providers/event_provider.dart';
 import 'providers/location_provider.dart';
 import 'theme/sports_app_theme.dart';
 import 'widgets/auth_gate.dart';
+import 'widgets/first_launch_gate.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,7 +40,7 @@ class SportsBookingApp extends StatelessWidget {
         theme: SportsAppTheme.build(),
         themeMode: ThemeMode.light,
         debugShowCheckedModeBanner: false,
-        home: const AuthGate(),
+        home: const FirstLaunchGate(child: AuthGate()),
       ),
     );
   }

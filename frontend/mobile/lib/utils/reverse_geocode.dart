@@ -14,7 +14,11 @@ Future<String?> _reverseGeocodeWeb(double lat, double lng) async {
     final uri = Uri.parse('${ApiConfig.baseUrl}/geocode/reverse').replace(
       queryParameters: {'lat': lat.toString(), 'lon': lng.toString()},
     );
-    final res = await http.get(uri);
+    final res = await http
+        .get(uri)
+        .timeout(const Duration(seconds: 15), onTimeout: () {
+      throw Exception('Geocode request timed out — check API is running and reachable.');
+    });
     if (res.statusCode != 200) {
       _log('backend geocode HTTP ${res.statusCode} ${res.body}');
       return null;

@@ -47,7 +47,8 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
   ];
 
   String _sport = 'Football';
-  DateTime _start = DateTime.now().add(const Duration(hours: 2));
+  DateTime _registrationStart = DateTime.now().add(const Duration(hours: 1));
+  DateTime _registrationEnd = DateTime.now().add(const Duration(days: 7, hours: 2));
   int _durationMinutes = 90;
   String _ageGroup = 'Open';
   String _competitionFormat = 'knockout';
@@ -252,40 +253,58 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
     });
   }
 
-  Future<void> _pickStart() async {
+  Future<void> _pickRegistrationDateTime({required bool isStart}) async {
     final now = DateTime.now();
+    final current = isStart ? _registrationStart : _registrationEnd;
     final date = await showDatePicker(
       context: context,
-      initialDate: _start.isBefore(now) ? now : _start,
+      initialDate: current.isBefore(now) ? now : current,
       firstDate: DateTime(now.year, now.month, now.day),
-      lastDate: now.add(const Duration(days: 365)),
+      lastDate: now.add(const Duration(days: 730)),
     );
     if (date == null || !mounted) {
       return;
     }
     final time = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay.fromDateTime(_start),
+      initialTime: TimeOfDay.fromDateTime(current),
     );
     if (time == null || !mounted) {
       return;
     }
     setState(() {
-      _start = DateTime(
+      final next = DateTime(
         date.year,
         date.month,
         date.day,
         time.hour,
         time.minute,
       );
+      if (isStart) {
+        _registrationStart = next;
+        if (!_registrationEnd.isAfter(_registrationStart)) {
+          _registrationEnd = _registrationStart.add(const Duration(hours: 1));
+        }
+      } else {
+        _registrationEnd = next;
+        if (!_registrationEnd.isAfter(_registrationStart)) {
+          _registrationStart = _registrationEnd.subtract(const Duration(hours: 1));
+        }
+      }
     });
   }
 
-  bool _validateStartInFuture() {
-    final now = DateTime.now();
-    if (_start.isBefore(now.subtract(const Duration(minutes: 1)))) {
+  bool _validateRegistrationWindow() {
+    if (!_registrationEnd.isAfter(_registrationStart)) {
       setState(() {
-        _error = 'Start time must be in the future.';
+        _error = 'Registration must close after it opens.';
+      });
+      return false;
+    }
+    final now = DateTime.now();
+    if (_registrationEnd.isBefore(now.subtract(const Duration(minutes: 1)))) {
+      setState(() {
+        _error = 'Registration end must be in the future.';
       });
       return false;
     }
@@ -296,7 +315,7 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
     if (!_formKey.currentState!.validate()) {
       return;
     }
-    if (!_validateStartInFuture()) {
+    if (!_validateRegistrationWindow()) {
       return;
     }
     final auth = context.read<AuthProvider>();
@@ -340,7 +359,8 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
       'long': loc.effectiveLng,
       'price': price,
       'max_slots': slots,
-      'start_time': _start.toUtc().toIso8601String(),
+      'registration_start': _registrationStart.toUtc().toIso8601String(),
+      'registration_end': _registrationEnd.toUtc().toIso8601String(),
       'status': _status,
       'age_group': _ageGroup,
       'competition_format': _competitionFormat,
@@ -399,6 +419,135 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
         borderSide: const BorderSide(color: SportsAppColors.cyan, width: 1),
+      ),
+    );
+  }
+
+  /// Same visual language as the main [Start time] picker — not an outlined text field.
+  Widget _buildTournamentDateTile({
+    required ThemeData theme,
+    required String label,
+    required DateTime date,
+    required VoidCallback onTap,
+  }) {
+    final valueLabel = DateFormat('EEE, MMM d, y').format(date);
+    return Material(
+      color: SportsAppColors.surfaceElevated,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: SportsAppColors.cyan.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.calendar_today_rounded,
+                  color: SportsAppColors.cyan,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: SportsAppColors.textMuted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      valueLabel,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: SportsAppColors.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                Icons.chevron_right_rounded,
+                color: SportsAppColors.textMuted.withValues(alpha: 0.7),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Registration window pickers — same card pattern as [Start time] / tournament tiles.
+  Widget _buildRegistrationDateTimeTile({
+    required ThemeData theme,
+    required String label,
+    required DateTime at,
+    required IconData leadingIcon,
+    required VoidCallback onTap,
+  }) {
+    final valueLabel = DateFormat('EEE, MMM d, y · HH:mm').format(at);
+    return Material(
+      color: SportsAppColors.surfaceElevated,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: SportsAppColors.cyan.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  leadingIcon,
+                  color: SportsAppColors.cyan,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: SportsAppColors.textMuted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      valueLabel,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: SportsAppColors.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                Icons.chevron_right_rounded,
+                color: SportsAppColors.textMuted.withValues(alpha: 0.7),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -554,7 +703,6 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
     final theme = Theme.of(context);
     final loc = context.watch<LocationProvider>();
     final isIndia = _isIndiaContext(context, loc);
-    final startLabel = DateFormat('EEE, MMM d, y · HH:mm').format(_start);
     final locLoading = loc.loading;
 
     return Scaffold(
@@ -733,62 +881,20 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                Material(
-                  color: SportsAppColors.surfaceElevated,
-                  borderRadius: BorderRadius.circular(16),
-                  child: InkWell(
-                    onTap: _pickStart,
-                    borderRadius: BorderRadius.circular(16),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 16,
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: SportsAppColors.cyan.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: const Icon(
-                              Icons.event_rounded,
-                              color: SportsAppColors.cyan,
-                              size: 22,
-                            ),
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Start time',
-                                  style: theme.textTheme.labelMedium?.copyWith(
-                                    color: SportsAppColors.textMuted,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  startLabel,
-                                  style: theme.textTheme.titleSmall?.copyWith(
-                                    fontWeight: FontWeight.w800,
-                                    color: SportsAppColors.textPrimary,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Icon(
-                            Icons.chevron_right_rounded,
-                            color: SportsAppColors.textMuted.withValues(alpha: 0.7),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                _buildRegistrationDateTimeTile(
+                  theme: theme,
+                  label: 'Registration opens',
+                  at: _registrationStart,
+                  leadingIcon: Icons.how_to_reg_rounded,
+                  onTap: () => _pickRegistrationDateTime(isStart: true),
+                ),
+                const SizedBox(height: 12),
+                _buildRegistrationDateTimeTile(
+                  theme: theme,
+                  label: 'Registration closes',
+                  at: _registrationEnd,
+                  leadingIcon: Icons.event_busy_rounded,
+                  onTap: () => _pickRegistrationDateTime(isStart: false),
                 ),
                 const SizedBox(height: 14),
                 Row(
@@ -882,48 +988,18 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
                     },
                   ),
                   const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Material(
-                          color: SportsAppColors.surfaceElevated,
-                          borderRadius: BorderRadius.circular(16),
-                          child: InkWell(
-                            onTap: () => _pickTournamentDate(isStart: true),
-                            borderRadius: BorderRadius.circular(16),
-                            child: Padding(
-                              padding: const EdgeInsets.all(14),
-                              child: Text(
-                                'Tournament start: ${DateFormat('dd MMM y').format(_tournamentStartDate)}',
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Material(
-                          color: SportsAppColors.surfaceElevated,
-                          borderRadius: BorderRadius.circular(16),
-                          child: InkWell(
-                            onTap: () => _pickTournamentDate(isStart: false),
-                            borderRadius: BorderRadius.circular(16),
-                            child: Padding(
-                              padding: const EdgeInsets.all(14),
-                              child: Text(
-                                'Tournament end: ${DateFormat('dd MMM y').format(_tournamentEndDate)}',
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
+                  _buildTournamentDateTile(
+                    theme: theme,
+                    label: 'Tournament start date',
+                    date: _tournamentStartDate,
+                    onTap: () => _pickTournamentDate(isStart: true),
+                  ),
+                  const SizedBox(height: 12),
+                  _buildTournamentDateTile(
+                    theme: theme,
+                    label: 'Tournament end date',
+                    date: _tournamentEndDate,
+                    onTap: () => _pickTournamentDate(isStart: false),
                   ),
                   const SizedBox(height: 10),
                   Builder(

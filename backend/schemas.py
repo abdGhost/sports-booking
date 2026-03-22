@@ -1,9 +1,9 @@
 """Pydantic schemas for API I/O."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class EventCreate(BaseModel):
@@ -41,12 +41,19 @@ class EventCreateForOrganizer(BaseModel):
     long: float
     price: float = Field(..., ge=0)
     max_slots: int = Field(..., ge=1)
-    start_time: datetime
+    registration_start: datetime
+    registration_end: datetime
     status: int = Field(default=0, ge=0, le=4)
     age_group: str = Field(default="Open", max_length=50)
     competition_format: str = Field(default="knockout", max_length=40)
     registration_mode: str = Field(default="team", max_length=20)
     extra_config: dict[str, Any] | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def registration_window(self) -> Self:
+        if self.registration_end <= self.registration_start:
+            raise ValueError("registration_end must be after registration_start")
+        return self
 
 
 class EventRead(BaseModel):
@@ -67,6 +74,8 @@ class EventRead(BaseModel):
     max_slots: int
     booked_slots: int
     start_time: datetime
+    registration_start: datetime | None = None
+    registration_end: datetime | None = None
     status: int
     age_group: str
     competition_format: str

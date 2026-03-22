@@ -32,6 +32,7 @@ def init_db() -> None:
     _sqlite_add_sport_event_extra_columns()
     _sqlite_add_sport_event_football_columns()
     _sqlite_add_sport_event_extra_config_column()
+    _sqlite_add_sport_event_registration_window_columns()
     _sqlite_add_booking_checkin_address_column()
     _sqlite_add_booking_team_name_column()
 
@@ -128,6 +129,21 @@ def _sqlite_add_sport_event_extra_config_column() -> None:
         col_names = {r[1] for r in rows}
         if "extra_config" not in col_names:
             conn.execute(text("ALTER TABLE sport_events ADD COLUMN extra_config TEXT"))
+            conn.commit()
+
+
+def _sqlite_add_sport_event_registration_window_columns() -> None:
+    """registration_start / registration_end for organizer-defined booking window."""
+    if not str(engine.url).startswith("sqlite"):
+        return
+    with engine.connect() as conn:
+        rows = conn.execute(text("PRAGMA table_info(sport_events)")).fetchall()
+        col_names = {r[1] for r in rows}
+        if "registration_start" not in col_names:
+            conn.execute(text("ALTER TABLE sport_events ADD COLUMN registration_start DATETIME"))
+            conn.commit()
+        if "registration_end" not in col_names:
+            conn.execute(text("ALTER TABLE sport_events ADD COLUMN registration_end DATETIME"))
             conn.commit()
 
 

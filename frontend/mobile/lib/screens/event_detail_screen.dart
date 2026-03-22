@@ -348,9 +348,26 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final local = _event.startTime.toLocal();
-    final dateLine = DateFormat('EEEE, MMMM d, y').format(local);
-    final timeLine = DateFormat('h:mm a').format(local);
+    final hasRegWindow = _event.registrationStart != null &&
+        _event.registrationEnd != null;
+    late final String dateLine;
+    late final String timeLine;
+    late final String dateFactLabel;
+    late final String timeFactLabel;
+    if (hasRegWindow) {
+      final rs = _event.registrationStart!.toLocal();
+      final re = _event.registrationEnd!.toLocal();
+      dateLine = DateFormat('EEE, MMM d, y · h:mm a').format(rs);
+      timeLine = DateFormat('EEE, MMM d, y · h:mm a').format(re);
+      dateFactLabel = 'Registration opens';
+      timeFactLabel = 'Registration closes';
+    } else {
+      final local = _event.startTime.toLocal();
+      dateLine = DateFormat('EEEE, MMMM d, y').format(local);
+      timeLine = DateFormat('h:mm a').format(local);
+      dateFactLabel = 'Date';
+      timeFactLabel = 'Time';
+    }
     final statusColor = _statusColor(_event.status);
 
     return Scaffold(
@@ -406,6 +423,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                     ),
                     _EventFactsCard(
                       event: _event,
+                      dateFactLabel: dateFactLabel,
+                      timeFactLabel: timeFactLabel,
                       dateLine: dateLine,
                       timeLine: timeLine,
                       slotsSummary: _slotsLine(_event),
@@ -746,12 +765,16 @@ class _MapAddressRowState extends State<_MapAddressRow> {
 class _EventFactsCard extends StatelessWidget {
   const _EventFactsCard({
     required this.event,
+    required this.dateFactLabel,
+    required this.timeFactLabel,
     required this.dateLine,
     required this.timeLine,
     required this.slotsSummary,
   });
 
   final SportEvent event;
+  final String dateFactLabel;
+  final String timeFactLabel;
   final String dateLine;
   final String timeLine;
   final String slotsSummary;
@@ -770,7 +793,7 @@ class _EventFactsCard extends StatelessWidget {
           _FactRow(
             icon: Icons.event_rounded,
             iconBg: SportsAppColors.cyan.withValues(alpha: 0.12),
-            label: 'Date',
+            label: dateFactLabel,
             value: dateLine,
           ),
           Divider(
@@ -781,7 +804,7 @@ class _EventFactsCard extends StatelessWidget {
           _FactRow(
             icon: Icons.schedule_rounded,
             iconBg: SportsAppColors.cyan.withValues(alpha: 0.12),
-            label: 'Time',
+            label: timeFactLabel,
             value: timeLine,
           ),
           Divider(

@@ -19,6 +19,8 @@ class SportEvent {
     required this.maxSlots,
     required this.bookedSlots,
     required this.startTime,
+    this.registrationStart,
+    this.registrationEnd,
     required this.status,
     this.distanceKm,
     this.ageGroup = 'Open',
@@ -53,6 +55,12 @@ class SportEvent {
   final int maxSlots;
   final int bookedSlots;
   final DateTime startTime;
+
+  /// When sign-up opens (if set by API).
+  final DateTime? registrationStart;
+
+  /// When sign-up closes (if set by API).
+  final DateTime? registrationEnd;
 
   /// Backend: 0 Draft, 1 Open, 2 Full, 3 Live, 4 Completed
   final int status;
@@ -95,6 +103,12 @@ class SportEvent {
       maxSlots: asInt(json['max_slots']),
       bookedSlots: asInt(json['booked_slots']),
       startTime: DateTime.parse(json['start_time'] as String),
+      registrationStart: json['registration_start'] != null
+          ? DateTime.parse(json['registration_start'] as String)
+          : null,
+      registrationEnd: json['registration_end'] != null
+          ? DateTime.parse(json['registration_end'] as String)
+          : null,
       status: asInt(json['status']),
       distanceKm: json['distance_km'] != null
           ? (json['distance_km'] as num).toDouble()
@@ -124,6 +138,10 @@ class SportEvent {
         'max_slots': maxSlots,
         'booked_slots': bookedSlots,
         'start_time': startTime.toIso8601String(),
+        if (registrationStart != null)
+          'registration_start': registrationStart!.toIso8601String(),
+        if (registrationEnd != null)
+          'registration_end': registrationEnd!.toIso8601String(),
         'status': status,
         if (distanceKm != null) 'distance_km': distanceKm,
         'age_group': ageGroup,

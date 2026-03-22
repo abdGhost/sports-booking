@@ -20,6 +20,10 @@ class LocationProvider extends ChangeNotifier {
     _auth.addListener(_onAuthChanged);
   }
 
+  /// Shared with [FirstLaunchGate] — do not rename without a migration.
+  static const String permissionsOnboardingPrefsKey =
+      'permissions_onboarding_v1_done';
+
   final AuthProvider _auth;
 
   double? _lat;
@@ -28,6 +32,7 @@ class LocationProvider extends ChangeNotifier {
   bool _loading = false;
   String? _address;
   bool _addressLoading = false;
+  bool _geocodeEnabled = false;
 
   double? get lat => _lat;
   double? get lng => _lng;
@@ -64,12 +69,33 @@ class LocationProvider extends ChangeNotifier {
     _lat = prefs.getDouble(_kLatKey);
     _lng = prefs.getDouble(_kLngKey);
     _address = prefs.getString(_kAddressKey);
+    final onboardingDone =
+        prefs.getBool(permissionsOnboardingPrefsKey) == true;
+    final legacyHasCoords = _lat != null && _lng != null;
+    _geocodeEnabled = onboardingDone || legacyHasCoords;
     notifyListeners();
-    unawaited(refreshAddress());
+    if (_geocodeEnabled) {
+      unawaited(refreshAddress());
+    }
+  }
+
+  /// After first-run welcome: save flag, request GPS fix when possible, then geocode.
+  Future<void> completePermissionsOnboarding() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(permissionsOnboardingPrefsKey, true);
+    _geocodeEnabled = true;
+    notifyListeners();
+    await refreshFromDevice();
+    if (_address == null || _address!.trim().isEmpty) {
+      await refreshAddress();
+    }
   }
 
   /// Resolves a postal-style address from current [effectiveLat] / [effectiveLng].
   Future<void> refreshAddress() async {
+    if (!_geocodeEnabled) {
+      return;
+    }
     _addressLoading = true;
     notifyListeners();
     try {

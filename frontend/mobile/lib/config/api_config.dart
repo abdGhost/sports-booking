@@ -1,51 +1,73 @@
 import 'package:flutter/foundation.dart';
 
+import 'local_dev_api.dart';
+
 /// Base URL for the FastAPI server.
 ///
-/// **Important:** `10.0.2.2` only works on the **Android emulator** (maps to your PC).
-/// **Flutter Web (Chrome)** runs on the PC, so it must use `127.0.0.1` or `localhost`.
-/// If you pass `--dart-define=API_BASE=...` with `10.0.2.2` and run on **web**, login
-/// will time out — use `127.0.0.1` for web, or omit `API_BASE` and let [baseUrl] pick.
+/// **Physical device:** set [localDevPcHost] in `lib/config/local_dev_api.dart`, then
+/// run `flutter run` with no flags.
 ///
-/// Physical phone: use your PC LAN IP, e.g. `http://192.168.1.10:8000`.
+/// **Android emulator:** leave `localDevPcHost` null — uses `10.0.2.2` (API must
+/// listen on `0.0.0.0`).
+///
+/// **Overrides:** `--dart-define=API_BASE=...`, then `API_HOST` / `API_PORT`.
+///
+/// **Flutter Web:** uses `127.0.0.1`; `10.0.2.2` in `API_BASE` is rewritten for web.
 class ApiConfig {
   ApiConfig._();
 
   static const String _fromEnv = String.fromEnvironment('API_BASE');
+  /// PC LAN IP or hostname, without scheme (e.g. `192.168.1.10`). Used on mobile when set.
+  static const String _hostFromEnv = String.fromEnvironment('API_HOST');
+  static const String _portFromEnv = String.fromEnvironment('API_PORT');
 
-  /// Default host port (matches backend `uvicorn` command).
-  static const int _defaultPort = 8000;
+  /// Default host port — keep in sync with `uvicorn ... --port`.
+  static const int _defaultPort = 8100;
+
+  static int get _effectivePort {
+    if (_portFromEnv.isNotEmpty) {
+      return int.tryParse(_portFromEnv) ?? _defaultPort;
+    }
+    return localDevApiPort;
+  }
 
   static String _sanitizeForWeb(String raw) {
     try {
       final uri = Uri.parse(raw);
-      // Android emulator alias is not reachable from browser runtime.
       if (uri.host == '10.0.2.2') {
         return uri.replace(host: '127.0.0.1').toString();
       }
       return raw;
     } catch (_) {
-      // Fallback for non-URI values passed via dart-define.
       return raw.replaceFirst('10.0.2.2', '127.0.0.1');
     }
   }
 
   static String get baseUrl {
     if (_fromEnv.isNotEmpty) {
-      // Help: same run config often passes 10.0.2.2 for Android; web cannot use it.
       if (kIsWeb) {
         return _sanitizeForWeb(_fromEnv);
       }
       return _fromEnv;
     }
+    if (_hostFromEnv.isNotEmpty) {
+      final host = _hostFromEnv.trim();
+      return 'http://$host:$_effectivePort';
+    }
+    if (!kIsWeb) {
+      final local = localDevPcHost?.trim();
+      if (local != null && local.isNotEmpty) {
+        return 'http://$local:$_effectivePort';
+      }
+    }
     if (kIsWeb) {
-      return 'http://127.0.0.1:$_defaultPort';
+      return 'http://127.0.0.1:$_effectivePort';
     }
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
-        return 'http://10.0.2.2:$_defaultPort';
+        return 'http://10.0.2.2:$_effectivePort';
       default:
-        return 'http://127.0.0.1:$_defaultPort';
+        return 'http://127.0.0.1:$_effectivePort';
     }
   }
 }

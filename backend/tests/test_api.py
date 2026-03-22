@@ -206,7 +206,8 @@ def test_patch_me_location_and_create_event_me(client: TestClient) -> None:
     assert me.status_code == 200
     assert me.json()["last_lat"] == pytest.approx(40.7128)
 
-    start = datetime(2026, 7, 1, 19, 0, 0, tzinfo=timezone.utc)
+    reg_open = datetime(2026, 6, 20, 9, 0, 0, tzinfo=timezone.utc)
+    reg_close = datetime(2026, 7, 1, 19, 0, 0, tzinfo=timezone.utc)
     ev = client.post(
         "/events/me",
         headers={"Authorization": f"Bearer {token}"},
@@ -222,7 +223,8 @@ def test_patch_me_location_and_create_event_me(client: TestClient) -> None:
             "long": -74.006,
             "price": 15.0,
             "max_slots": 10,
-            "start_time": start.isoformat().replace("+00:00", "Z"),
+            "registration_start": reg_open.isoformat().replace("+00:00", "Z"),
+            "registration_end": reg_close.isoformat().replace("+00:00", "Z"),
             "status": 1,
             "extra_config": {"max_total_players": 40},
         },
@@ -248,7 +250,8 @@ def test_create_event_me_forbidden_for_player(client: TestClient) -> None:
     )
     assert reg.status_code == 200
     token = reg.json()["access_token"]
-    start = datetime(2026, 7, 1, 19, 0, 0, tzinfo=timezone.utc)
+    reg_open = datetime(2026, 7, 1, 9, 0, 0, tzinfo=timezone.utc)
+    reg_close = datetime(2026, 7, 1, 19, 0, 0, tzinfo=timezone.utc)
     r = client.post(
         "/events/me",
         headers={"Authorization": f"Bearer {token}"},
@@ -260,7 +263,8 @@ def test_create_event_me_forbidden_for_player(client: TestClient) -> None:
             "long": 0.0,
             "price": 1.0,
             "max_slots": 5,
-            "start_time": start.isoformat().replace("+00:00", "Z"),
+            "registration_start": reg_open.isoformat().replace("+00:00", "Z"),
+            "registration_end": reg_close.isoformat().replace("+00:00", "Z"),
             "status": 0,
         },
     )

@@ -115,21 +115,32 @@ class _LoginScreenState extends State<LoginScreen> {
             child: GestureDetector(
               onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
               behavior: HitTestBehavior.deferToChild,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(
-                    child: Center(
-                      child: SingleChildScrollView(
-                        keyboardDismissBehavior:
-                            ScrollViewKeyboardDismissBehavior.onDrag,
-                        physics: const ClampingScrollPhysics(),
-                        padding: EdgeInsets.fromLTRB(
-                          horizontalPad,
-                          keyboardOpen ? 4 : 12,
-                          horizontalPad,
-                          16,
-                        ),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final padTop = keyboardOpen ? 8.0 : 12.0;
+                  final padBottom = 16.0 + bottomInset;
+                  final minScrollContentHeight = keyboardOpen
+                      ? 0.0
+                      : (constraints.maxHeight - padTop - padBottom)
+                          .clamp(0.0, double.infinity);
+                  return SingleChildScrollView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    physics: const ClampingScrollPhysics(),
+                    padding: EdgeInsets.fromLTRB(
+                      horizontalPad,
+                      padTop,
+                      horizontalPad,
+                      padBottom,
+                    ),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: minScrollContentHeight,
+                      ),
+                      child: Align(
+                        alignment: keyboardOpen
+                            ? Alignment.topCenter
+                            : Alignment.center,
                         child: ConstrainedBox(
                           constraints: const BoxConstraints(maxWidth: 440),
                           child: Form(
@@ -306,64 +317,57 @@ class _LoginScreenState extends State<LoginScreen> {
                                     ),
                                   ),
                                 ),
+                                const SizedBox(height: 20),
+                                Center(
+                                  child: Wrap(
+                                    crossAxisAlignment: WrapCrossAlignment.center,
+                                    alignment: WrapAlignment.center,
+                                    spacing: 4,
+                                    runSpacing: 6,
+                                    children: [
+                                      Text(
+                                        'New here?',
+                                        style: theme.textTheme.bodyMedium?.copyWith(
+                                          color: Colors.white.withValues(alpha: 0.78),
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      TextButton(
+                                        onPressed: () {
+                                          FocusManager.instance.primaryFocus?.unfocus();
+                                          Navigator.of(context).push(
+                                            MaterialPageRoute<void>(
+                                              builder: (_) => const SignupScreen(),
+                                            ),
+                                          );
+                                        },
+                                        style: TextButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 12,
+                                          ),
+                                          minimumSize: const Size(48, 48),
+                                          tapTargetSize: MaterialTapTargetSize.padded,
+                                        ),
+                                        child: Text(
+                                          'Create an account',
+                                          style: theme.textTheme.titleSmall?.copyWith(
+                                            color: SportsAppColors.cyan,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ],
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      horizontalPad,
-                      4,
-                      horizontalPad,
-                      12 + bottomInset,
-                    ),
-                    child: Center(
-                      child: Wrap(
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        alignment: WrapAlignment.center,
-                        spacing: 4,
-                        runSpacing: 6,
-                        children: [
-                          Text(
-                            'New here?',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              color: Colors.white.withValues(alpha: 0.78),
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: () {
-                              FocusManager.instance.primaryFocus?.unfocus();
-                              Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) => const SignupScreen(),
-                                ),
-                              );
-                            },
-                            style: TextButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 12,
-                              ),
-                              minimumSize: const Size(48, 48),
-                              tapTargetSize: MaterialTapTargetSize.padded,
-                            ),
-                            child: Text(
-                              'Create an account',
-                              style: theme.textTheme.titleSmall?.copyWith(
-                                color: SportsAppColors.cyan,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+                  );
+                },
               ),
             ),
           ),
