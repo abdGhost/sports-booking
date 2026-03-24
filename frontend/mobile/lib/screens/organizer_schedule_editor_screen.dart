@@ -20,6 +20,9 @@ class _DraftRow {
     this.scheduledAt,
     String venue = '',
     String notes = '',
+    this.status,
+    this.homeScore,
+    this.awayScore,
   })  : roundCtrl = TextEditingController(text: round),
         venueCtrl = TextEditingController(text: venue),
         notesCtrl = TextEditingController(text: notes);
@@ -28,6 +31,10 @@ class _DraftRow {
   int homeTeamId;
   int awayTeamId;
   DateTime? scheduledAt;
+  /// Preserved from API so a schedule edit does not wipe scores/status.
+  String? status;
+  int? homeScore;
+  int? awayScore;
   final TextEditingController roundCtrl;
   final TextEditingController venueCtrl;
   final TextEditingController notesCtrl;
@@ -41,9 +48,16 @@ class _DraftRow {
 
 /// Owner-only: `PUT /events/{id}/schedule` — pair registered squads into fixtures.
 class OrganizerScheduleEditorScreen extends StatefulWidget {
-  const OrganizerScheduleEditorScreen({super.key, required this.event});
+  const OrganizerScheduleEditorScreen({
+    super.key,
+    required this.event,
+    this.singleMatchEditId,
+  });
 
   final SportEvent event;
+
+  /// When set (e.g. from "edit this match"), only that fixture is shown; save merges with the rest.
+  final int? singleMatchEditId;
 
   @override
   State<OrganizerScheduleEditorScreen> createState() =>
@@ -54,9 +68,14 @@ class _OrganizerScheduleEditorScreenState
     extends State<OrganizerScheduleEditorScreen> {
   Map<int, String> _teams = {};
   final List<_DraftRow> _rows = [];
+  /// When editing one fixture, the others are kept here and merged back on save.
+  List<ScheduledMatchItem> _otherMatches = [];
   bool _loading = true;
   bool _saving = false;
+  bool _deleting = false;
   String? _error;
+
+  bool get _singleMatchMode => widget.singleMatchEditId != null;
 
   @override
   void initState() {
@@ -95,11 +114,54 @@ class _OrganizerScheduleEditorScreenState
       final teams = _parseTeams(jsonDecode(bookRes.body) as List<dynamic>);
       _teams = teams;
       final ids = teams.keys.toList()..sort();
+      final fullList = <ScheduledMatchItem>[];
       if (schedRes.statusCode == 200) {
         final body = jsonDecode(schedRes.body) as Map<String, dynamic>;
         final list = body['matches'] as List<dynamic>? ?? [];
         for (final raw in list) {
-          final m = ScheduledMatchItem.fromJson(raw as Map<String, dynamic>);
+          fullList.add(
+            ScheduledMatchItem.fromJson(raw as Map<String, dynamic>),
+          );
+        }
+      }
+
+      final singleId = widget.singleMatchEditId;
+      if (singleId != null) {
+        ScheduledMatchItem? found;
+        for (final m in fullList) {
+          if (m.id == singleId) {
+            found = m;
+            break;
+          }
+        }
+        if (found == null) {
+          setState(() {
+            _loading = false;
+            _error = 'That fixture is no longer on the schedule.';
+          });
+          return;
+        }
+        _otherMatches = [
+          for (final m in fullList)
+            if (m.id != singleId) m,
+        ];
+        _rows.add(
+          _DraftRow(
+            id: found.id,
+            round: found.round ?? '',
+            homeTeamId: found.homeTeamId,
+            awayTeamId: found.awayTeamId,
+            scheduledAt: found.scheduledAt,
+            venue: found.venue ?? '',
+            notes: found.notes ?? '',
+            status: found.status,
+            homeScore: found.homeScore,
+            awayScore: found.awayScore,
+          ),
+        );
+      } else {
+        _otherMatches = [];
+        for (final m in fullList) {
           _rows.add(
             _DraftRow(
               id: m.id,
@@ -109,18 +171,21 @@ class _OrganizerScheduleEditorScreenState
               scheduledAt: m.scheduledAt,
               venue: m.venue ?? '',
               notes: m.notes ?? '',
+              status: m.status,
+              homeScore: m.homeScore,
+              awayScore: m.awayScore,
             ),
           );
         }
-      }
-      if (_rows.isEmpty && ids.length >= 2) {
-        _rows.add(
-          _DraftRow(
-            id: 1,
-            homeTeamId: ids[0],
-            awayTeamId: ids[1],
-          ),
-        );
+        if (_rows.isEmpty && ids.length >= 2) {
+          _rows.add(
+            _DraftRow(
+              id: 1,
+              homeTeamId: ids[0],
+              awayTeamId: ids[1],
+            ),
+          );
+        }
       }
       setState(() => _loading = false);
     } catch (e) {
@@ -159,10 +224,75 @@ class _OrganizerScheduleEditorScreenState
     return _rows.map((r) => r.id).reduce((a, b) => a > b ? a : b) + 1;
   }
 
-  void _removeAt(int index) {
+  Future<void> _removeAt(int index) async {
+    if (_singleMatchMode) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Remove fixture?'),
+          content: const Text(
+            'This removes the match from the published schedule. Other matches stay unchanged.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Remove'),
+            ),
+          ],
+        ),
+      );
+      if (ok == true && mounted) {
+        await _deleteSingleFixtureFromServer();
+      }
+      return;
+    }
     final r = _rows.removeAt(index);
     r.dispose();
     setState(() {});
+  }
+
+  Future<void> _deleteSingleFixtureFromServer() async {
+    final mid = widget.singleMatchEditId;
+    if (mid == null) {
+      return;
+    }
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null || auth.token!.isEmpty) {
+      setState(() => _error = 'Sign in to delete fixtures.');
+      return;
+    }
+    setState(() {
+      _deleting = true;
+      _error = null;
+    });
+    final uri = Uri.parse(
+      '${ApiConfig.baseUrl}/events/${widget.event.id}/schedule/matches/$mid',
+    );
+    try {
+      final res = await http.delete(uri, headers: auth.authHeaders());
+      if (!mounted) {
+        return;
+      }
+      if (res.statusCode == 200) {
+        Navigator.of(context).pop(true);
+        return;
+      }
+      setState(() {
+        _deleting = false;
+        _error = _parseErr(res.body) ?? 'Delete failed (${res.statusCode}).';
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _deleting = false;
+          _error = e.toString();
+        });
+      }
+    }
   }
 
   void _addFixture() {
@@ -232,27 +362,34 @@ class _OrganizerScheduleEditorScreenState
       seen.add(r.id);
     }
 
+    final edited = <ScheduledMatchItem>[
+      for (final r in _rows)
+        ScheduledMatchItem(
+          id: r.id,
+          round: r.roundCtrl.text.trim().isEmpty
+              ? null
+              : r.roundCtrl.text.trim(),
+          homeTeamId: r.homeTeamId,
+          awayTeamId: r.awayTeamId,
+          homeTeamName: _teams[r.homeTeamId]!,
+          awayTeamName: _teams[r.awayTeamId]!,
+          scheduledAt: r.scheduledAt,
+          venue: r.venueCtrl.text.trim().isEmpty
+              ? null
+              : r.venueCtrl.text.trim(),
+          notes: r.notesCtrl.text.trim().isEmpty
+              ? null
+              : r.notesCtrl.text.trim(),
+          status: r.status,
+          homeScore: r.homeScore,
+          awayScore: r.awayScore,
+        ),
+    ];
+    final merged = _singleMatchMode ? [..._otherMatches, ...edited] : edited;
+    merged.sort((a, b) => a.id.compareTo(b.id));
+
     final payload = <String, dynamic>{
-      'matches': [
-        for (final r in _rows)
-          ScheduledMatchItem(
-            id: r.id,
-            round: r.roundCtrl.text.trim().isEmpty
-                ? null
-                : r.roundCtrl.text.trim(),
-            homeTeamId: r.homeTeamId,
-            awayTeamId: r.awayTeamId,
-            homeTeamName: _teams[r.homeTeamId]!,
-            awayTeamName: _teams[r.awayTeamId]!,
-            scheduledAt: r.scheduledAt,
-            venue: r.venueCtrl.text.trim().isEmpty
-                ? null
-                : r.venueCtrl.text.trim(),
-            notes: r.notesCtrl.text.trim().isEmpty
-                ? null
-                : r.notesCtrl.text.trim(),
-          ).toJson(),
-      ],
+      'matches': [for (final m in merged) m.toJson()],
     };
 
     setState(() {
@@ -311,7 +448,7 @@ class _OrganizerScheduleEditorScreenState
     return Scaffold(
       backgroundColor: SportsAppColors.pageBackground,
       appBar: AppBar(
-        title: const Text('Edit schedule'),
+        title: Text(_singleMatchMode ? 'Edit match' : 'Edit schedule'),
         backgroundColor: SportsAppColors.pageBackground,
         surfaceTintColor: Colors.transparent,
       ),
@@ -345,10 +482,12 @@ class _OrganizerScheduleEditorScreenState
                         ),
                       ),
                       const SizedBox(height: 6),
-                      Text(
+                        Text(
                         teamIds.length < 2
                             ? 'At least two squads must register before you can publish fixtures.'
-                            : '${teamIds.length} squads registered — pair them below.',
+                            : _singleMatchMode
+                                ? 'Only this fixture is shown. Saving leaves your other matches unchanged.'
+                                : '${teamIds.length} squads registered — pair them below.',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: SportsAppColors.textMuted,
                           fontWeight: FontWeight.w500,
@@ -369,13 +508,16 @@ class _OrganizerScheduleEditorScreenState
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         OutlinedButton.icon(
-                          onPressed: teamIds.length < 2 ? null : _addFixture,
+                          onPressed: teamIds.length < 2 || _singleMatchMode
+                              ? null
+                              : _addFixture,
                           icon: const Icon(Icons.add_rounded),
                           label: const Text('Add fixture'),
                         ),
                         const SizedBox(height: 10),
                         FilledButton(
-                          onPressed: _saving ? null : _save,
+                          onPressed:
+                              (_saving || _deleting) ? null : _save,
                           style: FilledButton.styleFrom(
                             backgroundColor: SportsAppColors.navy,
                             foregroundColor: Colors.white,
@@ -390,7 +532,11 @@ class _OrganizerScheduleEditorScreenState
                                     color: Colors.white,
                                   ),
                                 )
-                              : const Text('Save schedule'),
+                              : Text(
+                                  _singleMatchMode
+                                      ? 'Save match'
+                                      : 'Save schedule',
+                                ),
                         ),
                       ],
                     ),
@@ -408,17 +554,17 @@ class _OrganizerScheduleEditorScreenState
     List<int> teamIds,
   ) {
     return Material(
-      color: SportsAppColors.surfaceElevated,
-      borderRadius: BorderRadius.circular(16),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+        color: SportsAppColors.surfaceElevated,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
             Row(
               children: [
                 Text(
-                  'Match ${index + 1}',
+                  _singleMatchMode ? 'Fixture' : 'Match ${index + 1}',
                   style: theme.textTheme.labelLarge?.copyWith(
                     fontWeight: FontWeight.w900,
                     color: SportsAppColors.accentBlue900,
@@ -426,7 +572,7 @@ class _OrganizerScheduleEditorScreenState
                 ),
                 const Spacer(),
                 IconButton(
-                  onPressed: () => _removeAt(index),
+                  onPressed: _deleting ? null : () => _removeAt(index),
                   icon: const Icon(Icons.delete_outline_rounded),
                   color: SportsAppColors.accentWarm,
                 ),
@@ -535,7 +681,7 @@ class _OrganizerScheduleEditorScreenState
             ),
           ],
         ),
-      ),
+        ),
     );
   }
 }

@@ -8,11 +8,190 @@ import 'package:provider/provider.dart';
 import '../config/api_config.dart';
 import '../models/booking_player.dart';
 import '../models/organizer_matchup.dart';
+import '../models/scheduled_match.dart';
 import '../models/sport_event.dart';
 import '../providers/auth_provider.dart';
 import '../theme/sports_app_theme.dart';
 import '../widgets/sports_components.dart';
 import 'matchup_detail_screen.dart';
+import 'organizer_schedule_editor_screen.dart';
+
+(int, int) _unorderedTeamPair(int a, int b) => a < b ? (a, b) : (b, a);
+
+int _maxFixturesPerSquadPair(String competitionFormat) {
+  final f = competitionFormat.toLowerCase().trim();
+  if (f == 'league' || f == 'group_knockout') {
+    return 2;
+  }
+  return 1;
+}
+
+int? _knockoutLoserTeamId(ScheduledMatchItem m) {
+  if (m.status != 'finished' || m.homeScore == null || m.awayScore == null) {
+    return null;
+  }
+  if (m.homeScore! > m.awayScore!) {
+    return m.awayTeamId;
+  }
+  if (m.awayScore! > m.homeScore!) {
+    return m.homeTeamId;
+  }
+  return null;
+}
+
+int _fixtureOrderCompare(ScheduledMatchItem a, ScheduledMatchItem b) {
+  final ta = a.scheduledAt;
+  final tb = b.scheduledAt;
+  if (ta == null && tb == null) {
+    return a.id.compareTo(b.id);
+  }
+  if (ta == null) {
+    return 1;
+  }
+  if (tb == null) {
+    return -1;
+  }
+  final c = ta.compareTo(tb);
+  if (c != 0) {
+    return c;
+  }
+  return a.id.compareTo(b.id);
+}
+
+/// Mirrors backend schedule rules: pair limits + knockout elimination ordering.
+String? _validateNewMatchupForSchedule({
+  required String competitionFormat,
+  required List<ScheduledMatchItem> existing,
+  required int teamAId,
+  required int teamBId,
+  required DateTime kickoff,
+  required int nextMatchId,
+}) {
+  final maxPer = _maxFixturesPerSquadPair(competitionFormat);
+  final pair = _unorderedTeamPair(teamAId, teamBId);
+  var count = 0;
+  for (final m in existing) {
+    if (_unorderedTeamPair(m.homeTeamId, m.awayTeamId) == pair) {
+      count++;
+    }
+  }
+  if (count >= maxPer) {
+    return maxPer == 1
+        ? 'These squads already have a matchup. In knockout, each pair can only meet once.'
+        : 'These squads already have two fixtures (home and away). Remove one before adding another.';
+  }
+
+  final fmt = competitionFormat.toLowerCase().trim();
+  if (fmt != 'knockout') {
+    return null;
+  }
+
+  ScheduledMatchItem? latestLossFor(int tid) {
+    ScheduledMatchItem? best;
+    for (final m in existing) {
+      final lid = _knockoutLoserTeamId(m);
+      if (lid != tid) {
+        continue;
+      }
+      if (best == null || _fixtureOrderCompare(m, best) > 0) {
+        best = m;
+      }
+    }
+    return best;
+  }
+
+  final synthetic = ScheduledMatchItem(
+    id: nextMatchId,
+    homeTeamId: teamAId,
+    awayTeamId: teamBId,
+    homeTeamName: '',
+    awayTeamName: '',
+    scheduledAt: kickoff,
+  );
+
+  for (final tid in [teamAId, teamBId]) {
+    final lostIn = latestLossFor(tid);
+    if (lostIn == null) {
+      continue;
+    }
+    if (_fixtureOrderCompare(synthetic, lostIn) > 0) {
+      return 'Knockout: a squad eliminated in a finished match cannot be scheduled in a later fixture.';
+    }
+  }
+  return null;
+}
+
+/// Turns raw API / validation text into short, actionable copy for organizers.
+String _clarifyScheduleSaveError(String raw) {
+  final t = raw.trim();
+  if (t.isEmpty) {
+    return 'Could not save the matchup. Please try again.';
+  }
+  final lower = t.toLowerCase();
+  if (lower.contains('squad pairing already') ||
+      lower.contains('each pair can only meet once')) {
+    return 'These two squads already have a game on the schedule. In knockout, '
+        'you can only schedule one match between the same pair. Remove the existing '
+        'fixture first, or choose two different squads.';
+  }
+  if (lower.contains('two fixtures') && lower.contains('home and away')) {
+    return 'You already have two games between this pair (home and away). '
+        'Delete one of those fixtures before adding another.';
+  }
+  if (lower.contains('eliminated') || lower.contains('later fixture')) {
+    return 'For knockout events, a squad that already lost a finished match cannot '
+        'be added to a new game with a later kickoff. Change the kickoff time, '
+        'pick different squads, or remove/adjust the finished game first.';
+  }
+  if (lower.contains('home and away must be different')) {
+    return 'Home and away must be two different squads.';
+  }
+  if (lower.contains('registered squad')) {
+    return 'Both teams must be squads registered for this event. Refresh and check '
+        'the Registered squads list.';
+  }
+  if (lower.contains('only the event owner') ||
+      lower.contains('only organizers can')) {
+    return 'Only the organizer who owns this event can publish the schedule. '
+        'Sign in with the correct organizer account.';
+  }
+  if (lower.contains('team events only') || lower.contains('team/squad')) {
+    return 'The schedule only applies to team (squad) events.';
+  }
+  if (lower.contains('at least two') && lower.contains('squad')) {
+    return 'You need at least two registered squads before adding fixtures.';
+  }
+  return t;
+}
+
+String _parseScheduleHttpError(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map && decoded['detail'] != null) {
+      final d = decoded['detail'];
+      if (d is String) {
+        return _clarifyScheduleSaveError(d);
+      }
+      if (d is List) {
+        final parts = <String>[];
+        for (final item in d) {
+          if (item is Map) {
+            final msg = item['msg'];
+            if (msg is String && msg.trim().isNotEmpty) {
+              parts.add(msg.trim());
+            }
+          }
+        }
+        if (parts.isNotEmpty) {
+          return _clarifyScheduleSaveError(parts.join(' '));
+        }
+      }
+    }
+  } catch (_) {}
+  return _clarifyScheduleSaveError(
+    'The server could not save this matchup. Check your connection and try again.',
+  );
+}
 
 /// Organizer tools: scheduled matchups and registered squads.
 class OrganizerDashboard extends StatefulWidget {
@@ -37,7 +216,7 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
   bool _loading = false;
   String? _loadError;
 
-  /// Organizer-scheduled pairings (UI-only; wire to API later).
+  /// Pairings from `GET /events/{id}/schedule` (updated after create/delete).
   final List<OrganizerMatchup> _matchups = [];
 
   Map<int, List<BookingPlayer>> _groupByTeamId(List<BookingPlayer> rows) {
@@ -94,6 +273,7 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
     if (!mounted) {
       return;
     }
+    final scaffoldMessengerContext = context;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -102,6 +282,8 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) {
+        var saving = false;
+        var sheetError = '';
         return StatefulBuilder(
           builder: (context, setModal) {
             final theme = Theme.of(context);
@@ -138,6 +320,7 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
               }
               setModal(() {
                 kickoff = DateTime(d.year, d.month, d.day, t.hour, t.minute);
+                sheetError = '';
               });
             }
 
@@ -152,7 +335,10 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
               if (!context.mounted) {
                 return;
               }
-              setModal(() => reportingTime = t);
+              setModal(() {
+                reportingTime = t;
+                sheetError = '';
+              });
             }
 
             final reportingAt = DateTime(
@@ -191,7 +377,9 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Pick two squads, then set when the match starts and when teams should report.',
+                      'Pick two squads, then set kickoff and reporting time. '
+                      'If save fails, read the highlighted note — it usually means a duplicate pair '
+                      '(knockout) or a squad is already out of the tournament.',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: SportsAppColors.textMuted,
                         height: 1.35,
@@ -226,6 +414,7 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
                             }
                             setModal(() {
                               teamAId = v;
+                              sheetError = '';
                               if (teamBId == teamAId) {
                                 final other = squads.firstWhere((s) => s.teamId != teamAId);
                                 teamBId = other.teamId;
@@ -263,7 +452,10 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
                             if (v == null) {
                               return;
                             }
-                            setModal(() => teamBId = v);
+                            setModal(() {
+                              teamBId = v;
+                              sheetError = '';
+                            });
                           },
                         ),
                       ),
@@ -376,6 +568,41 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
                         ),
                       ),
                     ],
+                    if (sheetError.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: SportsAppColors.accentWarm.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: SportsAppColors.accentWarm.withValues(alpha: 0.45),
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              Icons.info_outline_rounded,
+                              size: 20,
+                              color: SportsAppColors.accentWarm,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                sheetError,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: SportsAppColors.accentBlue900,
+                                  fontWeight: FontWeight.w600,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 22),
                     Row(
                       children: [
@@ -388,32 +615,69 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
                         const SizedBox(width: 12),
                         Expanded(
                           child: FilledButton(
-                            onPressed: reportingOk && teamAId != teamBId
-                                ? () {
-                                    final m = OrganizerMatchup(
-                                      id: '${DateTime.now().microsecondsSinceEpoch}',
+                            onPressed: saving || !reportingOk || teamAId == teamBId
+                                ? null
+                                : () async {
+                                    setModal(() {
+                                      saving = true;
+                                      sheetError = '';
+                                    });
+                                    final err = await _saveMatchupToApi(
                                       teamAId: teamAId,
-                                      teamAName: nameFor(teamAId),
                                       teamBId: teamBId,
+                                      teamAName: nameFor(teamAId),
                                       teamBName: nameFor(teamBId),
                                       kickoff: kickoff,
                                       reportingAt: reportingAt,
                                     );
+                                    if (!mounted) {
+                                      return;
+                                    }
+                                    if (err != null) {
+                                      setModal(() {
+                                        saving = false;
+                                        sheetError = err;
+                                      });
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text(err),
+                                            behavior: SnackBarBehavior.floating,
+                                            duration: const Duration(seconds: 6),
+                                          ),
+                                        );
+                                      }
+                                      return;
+                                    }
+                                    setModal(() => saving = false);
+                                    if (!context.mounted) {
+                                      return;
+                                    }
                                     Navigator.pop(context);
-                                    setState(() => _matchups.insert(0, m));
-                                    ScaffoldMessenger.of(this.context).showSnackBar(
+                                    if (!mounted) {
+                                      return;
+                                    }
+                                    ScaffoldMessenger.of(scaffoldMessengerContext).showSnackBar(
                                       const SnackBar(
-                                        content: Text('Matchup scheduled (saved on this device for now).'),
+                                        content: Text('Matchup saved — visible on Scheduled matches.'),
                                       ),
                                     );
-                                  }
-                                : null,
+                                  },
                             style: FilledButton.styleFrom(
                               backgroundColor: SportsAppColors.navy,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(vertical: 14),
                             ),
-                            child: const Text('Save matchup'),
+                            child: saving
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Text('Save matchup'),
                           ),
                         ),
                       ],
@@ -455,10 +719,45 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
     }
   }
 
+  Future<void> _openFixtureEditor(OrganizerMatchup m) async {
+    final mid = int.tryParse(m.id);
+    if (mid == null) {
+      return;
+    }
+    var ev = _event ?? widget.event;
+    if (ev == null) {
+      await _loadEvent();
+      ev = _event ?? widget.event;
+    }
+    if (ev == null || !mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not load event. Pull to refresh and try again.'),
+        ),
+      );
+      return;
+    }
+    final eventForEdit = ev;
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => OrganizerScheduleEditorScreen(
+          event: eventForEdit,
+          singleMatchEditId: mid,
+        ),
+      ),
+    );
+    if (ok == true && mounted) {
+      await _loadScheduleMatchups();
+    }
+  }
+
   Future<void> _openMatchupDetail(OrganizerMatchup m) async {
     final updated = await Navigator.of(context).push<OrganizerMatchup>(
       MaterialPageRoute(
-        builder: (_) => MatchupDetailScreen(matchup: m),
+        builder: (_) => MatchupDetailScreen(
+          eventId: widget.eventId,
+          matchup: m,
+        ),
       ),
     );
     if (!mounted || updated == null) {
@@ -528,7 +827,23 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
                       ),
                       IconButton(
                         visualDensity: VisualDensity.compact,
-                        onPressed: () => setState(() => _matchups.removeWhere((x) => x.id == m.id)),
+                        onPressed: () => _openFixtureEditor(m),
+                        icon: Icon(
+                          Icons.edit_calendar_outlined,
+                          color: SportsAppColors.cyan.withValues(alpha: 0.95),
+                        ),
+                        tooltip: 'Edit fixture',
+                      ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () async {
+                          final mid = int.tryParse(m.id);
+                          if (mid != null) {
+                            await _deleteMatchupFromApi(m.id);
+                          } else {
+                            setState(() => _matchups.removeWhere((x) => x.id == m.id));
+                          }
+                        },
                         icon: Icon(
                           Icons.delete_outline_rounded,
                           color: SportsAppColors.textMuted.withValues(alpha: 0.85),
@@ -673,7 +988,11 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
     } else {
       setState(() => _loadError = null);
     }
-    await Future.wait([_loadEvent(), _loadBookings()]);
+    await Future.wait([
+      _loadEvent(),
+      _loadBookings(),
+      _loadScheduleMatchups(),
+    ]);
     if (mounted) {
       setState(() => _loading = false);
     }
@@ -754,6 +1073,219 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
             SnackBar(content: Text('Roster error: $e')),
           );
         }
+      }
+    }
+  }
+
+  int _nextScheduleMatchId(List<dynamic> existing) {
+    var maxId = 0;
+    for (final raw in existing) {
+      if (raw is! Map) {
+        continue;
+      }
+      final id = raw['id'];
+      final n = id is int
+          ? id
+          : (id is num ? id.toInt() : int.tryParse('$id') ?? 0);
+      if (n > maxId) {
+        maxId = n;
+      }
+    }
+    return maxId + 1;
+  }
+
+  OrganizerMatchup _organizerMatchupFromScheduled(ScheduledMatchItem sm) {
+    final kick = sm.scheduledAt ?? DateTime.now();
+    final report = kick.subtract(const Duration(minutes: 30));
+    final st = sm.status?.toLowerCase();
+    OrganizerMatchupStatus status;
+    switch (st) {
+      case 'live':
+        status = OrganizerMatchupStatus.live;
+        break;
+      case 'finished':
+        status = OrganizerMatchupStatus.finished;
+        break;
+      default:
+        status = OrganizerMatchupStatus.scheduled;
+    }
+    return OrganizerMatchup(
+      id: sm.id.toString(),
+      teamAId: sm.homeTeamId,
+      teamAName: sm.homeTeamName,
+      teamBId: sm.awayTeamId,
+      teamBName: sm.awayTeamName,
+      kickoff: kick,
+      reportingAt: report.isBefore(kick) ? report : kick,
+      scoreA: sm.homeScore ?? 0,
+      scoreB: sm.awayScore ?? 0,
+      status: status,
+      notes: sm.notes,
+    );
+  }
+
+  Future<void> _loadScheduleMatchups() async {
+    final uri = Uri.parse(
+      '${ApiConfig.baseUrl}/events/${widget.eventId}/schedule',
+    );
+    try {
+      final res = await http.get(uri);
+      if (!mounted) {
+        return;
+      }
+      if (res.statusCode != 200) {
+        setState(() => _matchups.clear());
+        return;
+      }
+      final map = jsonDecode(res.body) as Map<String, dynamic>;
+      final list = map['matches'] as List<dynamic>? ?? [];
+      final next = <OrganizerMatchup>[];
+      for (final raw in list) {
+        if (raw is! Map<String, dynamic>) {
+          continue;
+        }
+        try {
+          next.add(
+            _organizerMatchupFromScheduled(
+              ScheduledMatchItem.fromJson(raw),
+            ),
+          );
+        } catch (_) {
+          continue;
+        }
+      }
+      setState(() {
+        _matchups
+          ..clear()
+          ..addAll(next);
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() => _matchups.clear());
+      }
+    }
+  }
+
+  Future<String?> _saveMatchupToApi({
+    required int teamAId,
+    required int teamBId,
+    required String teamAName,
+    required String teamBName,
+    required DateTime kickoff,
+    required DateTime reportingAt,
+  }) async {
+    final auth = context.read<AuthProvider>();
+    final token = auth.token;
+    if (token == null || token.isEmpty) {
+      return 'Sign in to save matchups to the server.';
+    }
+    final orgId = _event?.organizerId ?? widget.event?.organizerId;
+    final uid = auth.user?.id;
+    if (orgId != null && uid != null && uid != orgId) {
+      return 'Only the event organizer can publish the schedule.';
+    }
+    final headers = auth.authHeaders();
+    final base = ApiConfig.baseUrl;
+    final eid = widget.eventId;
+    try {
+      final getRes = await http.get(Uri.parse('$base/events/$eid/schedule'));
+      if (getRes.statusCode != 200) {
+        return _clarifyScheduleSaveError(
+          'Could not load the current schedule (server ${getRes.statusCode}). '
+          'Check your connection and try again.',
+        );
+      }
+      final map = jsonDecode(getRes.body) as Map<String, dynamic>;
+      final existing = map['matches'] as List<dynamic>? ?? [];
+      final nextId = _nextScheduleMatchId(existing);
+      final existingMaps = <Map<String, dynamic>>[];
+      final parsedExisting = <ScheduledMatchItem>[];
+      for (final raw in existing) {
+        if (raw is Map<String, dynamic>) {
+          existingMaps.add(Map<String, dynamic>.from(raw));
+          try {
+            parsedExisting.add(ScheduledMatchItem.fromJson(raw));
+          } catch (_) {}
+        }
+      }
+      final cf =
+          _event?.competitionFormat ?? widget.event?.competitionFormat ?? 'knockout';
+      final preflight = _validateNewMatchupForSchedule(
+        competitionFormat: cf,
+        existing: parsedExisting,
+        teamAId: teamAId,
+        teamBId: teamBId,
+        kickoff: kickoff,
+        nextMatchId: nextId,
+      );
+      if (preflight != null) {
+        return _clarifyScheduleSaveError(preflight);
+      }
+      final newItem = ScheduledMatchItem(
+        id: nextId,
+        round: 'Matchup',
+        homeTeamId: teamAId,
+        awayTeamId: teamBId,
+        homeTeamName: teamAName,
+        awayTeamName: teamBName,
+        scheduledAt: kickoff,
+        notes:
+            'Report by ${DateFormat('h:mm a').format(reportingAt)} on match day',
+      );
+      existingMaps.add(newItem.toJson());
+      final putRes = await http.put(
+        Uri.parse('$base/events/$eid/schedule'),
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'matches': existingMaps}),
+      );
+      if (putRes.statusCode != 200) {
+        return _parseScheduleHttpError(putRes.body);
+      }
+      await _loadScheduleMatchups();
+      return null;
+    } catch (_) {
+      return _clarifyScheduleSaveError(
+        'Could not reach the server while saving. Check your connection and try again.',
+      );
+    }
+  }
+
+  Future<void> _deleteMatchupFromApi(String idStr) async {
+    final mid = int.tryParse(idStr);
+    if (mid == null) {
+      return;
+    }
+    final auth = context.read<AuthProvider>();
+    final uri = Uri.parse(
+      '${ApiConfig.baseUrl}/events/${widget.eventId}/schedule/matches/$mid',
+    );
+    try {
+      final res = await http.delete(uri, headers: auth.authHeaders());
+      if (!mounted) {
+        return;
+      }
+      if (res.statusCode == 200) {
+        await _loadScheduleMatchups();
+        return;
+      }
+      var msg = 'Could not remove (${res.statusCode})';
+      try {
+        final err = jsonDecode(res.body);
+        if (err is Map && err['detail'] != null) {
+          msg = '${err['detail']}';
+        }
+      } catch (_) {}
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
       }
     }
   }

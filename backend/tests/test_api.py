@@ -545,6 +545,7 @@ def test_event_schedule_patch_and_delete_match(client: TestClient) -> None:
             "start_time": match_start.isoformat().replace("+00:00", "Z"),
             "status": 1,
             "registration_mode": "team",
+            "competition_format": "league",
         },
     )
     assert ev.status_code == 200, ev.text
@@ -638,3 +639,313 @@ def test_event_schedule_patch_and_delete_match(client: TestClient) -> None:
         headers={"Authorization": f"Bearer {org_token}"},
     )
     assert missing.status_code == 404
+
+
+def test_knockout_schedule_rejects_duplicate_pair(client: TestClient) -> None:
+    org = client.post(
+        "/auth/register",
+        json={
+            "name": "Org KO Dup",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "organizer",
+        },
+    )
+    assert org.status_code == 200
+    org_token = org.json()["access_token"]
+
+    p1 = client.post(
+        "/auth/register",
+        json={
+            "name": "K1",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    p2 = client.post(
+        "/auth/register",
+        json={
+            "name": "K2",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    t1 = p1.json()["access_token"]
+    t2 = p2.json()["access_token"]
+
+    reg_open = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+    reg_close = datetime(2026, 10, 10, 19, 0, 0, tzinfo=timezone.utc)
+    match_start = datetime(2026, 10, 15, 10, 0, 0, tzinfo=timezone.utc)
+    ev = client.post(
+        "/events/me",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "title": "KO Dup",
+            "sport_type": "Soccer",
+            "venue_name": "Stadium",
+            "lat": 12.0,
+            "long": 77.0,
+            "price": 100.0,
+            "max_slots": 16,
+            "registration_start": reg_open.isoformat().replace("+00:00", "Z"),
+            "registration_end": reg_close.isoformat().replace("+00:00", "Z"),
+            "start_time": match_start.isoformat().replace("+00:00", "Z"),
+            "status": 1,
+            "registration_mode": "team",
+            "competition_format": "knockout",
+        },
+    )
+    assert ev.status_code == 200, ev.text
+    event_id = ev.json()["id"]
+
+    b1 = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {t1}"},
+        json={"team_name": "A FC"},
+    )
+    b2 = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {t2}"},
+        json={"team_name": "B FC"},
+    )
+    assert b1.status_code == 200
+    assert b2.status_code == 200
+    tid1 = b1.json()["team_id"]
+    tid2 = b2.json()["team_id"]
+
+    when = datetime(2026, 10, 12, 16, 30, 0, tzinfo=timezone.utc)
+    dup = client.put(
+        f"/events/{event_id}/schedule",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "matches": [
+                {
+                    "id": 1,
+                    "home_team_id": tid1,
+                    "away_team_id": tid2,
+                    "home_team_name": "A FC",
+                    "away_team_name": "B FC",
+                    "scheduled_at": when.isoformat().replace("+00:00", "Z"),
+                },
+                {
+                    "id": 2,
+                    "home_team_id": tid2,
+                    "away_team_id": tid1,
+                    "home_team_name": "B FC",
+                    "away_team_name": "A FC",
+                    "scheduled_at": when.isoformat().replace("+00:00", "Z"),
+                },
+            ]
+        },
+    )
+    assert dup.status_code == 400
+
+
+def test_league_schedule_rejects_third_fixture_same_pair(client: TestClient) -> None:
+    org = client.post(
+        "/auth/register",
+        json={
+            "name": "Org L3",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "organizer",
+        },
+    )
+    assert org.status_code == 200
+    org_token = org.json()["access_token"]
+
+    p1 = client.post(
+        "/auth/register",
+        json={
+            "name": "L1",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    p2 = client.post(
+        "/auth/register",
+        json={
+            "name": "L2",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    t1 = p1.json()["access_token"]
+    t2 = p2.json()["access_token"]
+
+    reg_open = datetime(2026, 11, 1, 9, 0, 0, tzinfo=timezone.utc)
+    reg_close = datetime(2026, 11, 10, 19, 0, 0, tzinfo=timezone.utc)
+    match_start = datetime(2026, 11, 15, 10, 0, 0, tzinfo=timezone.utc)
+    ev = client.post(
+        "/events/me",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "title": "League 3",
+            "sport_type": "Soccer",
+            "venue_name": "Stadium",
+            "lat": 12.0,
+            "long": 77.0,
+            "price": 100.0,
+            "max_slots": 16,
+            "registration_start": reg_open.isoformat().replace("+00:00", "Z"),
+            "registration_end": reg_close.isoformat().replace("+00:00", "Z"),
+            "start_time": match_start.isoformat().replace("+00:00", "Z"),
+            "status": 1,
+            "registration_mode": "team",
+            "competition_format": "league",
+        },
+    )
+    assert ev.status_code == 200, ev.text
+    event_id = ev.json()["id"]
+
+    b1 = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {t1}"},
+        json={"team_name": "X FC"},
+    )
+    b2 = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {t2}"},
+        json={"team_name": "Y FC"},
+    )
+    assert b1.status_code == 200
+    assert b2.status_code == 200
+    tid1 = b1.json()["team_id"]
+    tid2 = b2.json()["team_id"]
+
+    w1 = datetime(2026, 11, 12, 10, 0, 0, tzinfo=timezone.utc)
+    w2 = datetime(2026, 11, 12, 12, 0, 0, tzinfo=timezone.utc)
+    w3 = datetime(2026, 11, 12, 14, 0, 0, tzinfo=timezone.utc)
+    trip = client.put(
+        f"/events/{event_id}/schedule",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "matches": [
+                {
+                    "id": 1,
+                    "home_team_id": tid1,
+                    "away_team_id": tid2,
+                    "home_team_name": "X FC",
+                    "away_team_name": "Y FC",
+                    "scheduled_at": w1.isoformat().replace("+00:00", "Z"),
+                },
+                {
+                    "id": 2,
+                    "home_team_id": tid2,
+                    "away_team_id": tid1,
+                    "home_team_name": "Y FC",
+                    "away_team_name": "X FC",
+                    "scheduled_at": w2.isoformat().replace("+00:00", "Z"),
+                },
+                {
+                    "id": 3,
+                    "home_team_id": tid1,
+                    "away_team_id": tid2,
+                    "home_team_name": "X FC",
+                    "away_team_name": "Y FC",
+                    "scheduled_at": w3.isoformat().replace("+00:00", "Z"),
+                },
+            ]
+        },
+    )
+    assert trip.status_code == 400
+
+
+def test_knockout_eliminated_squad_cannot_play_later_fixture(client: TestClient) -> None:
+    org = client.post(
+        "/auth/register",
+        json={
+            "name": "Org KO Elim",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "organizer",
+        },
+    )
+    assert org.status_code == 200
+    org_token = org.json()["access_token"]
+
+    players = []
+    for i in range(3):
+        r = client.post(
+            "/auth/register",
+            json={
+                "name": f"E{i}",
+                "email": _unique_email(),
+                "password": "password12",
+                "role": "player",
+            },
+        )
+        assert r.status_code == 200
+        players.append(r.json()["access_token"])
+
+    reg_open = datetime(2026, 12, 1, 9, 0, 0, tzinfo=timezone.utc)
+    reg_close = datetime(2026, 12, 10, 19, 0, 0, tzinfo=timezone.utc)
+    match_start = datetime(2026, 12, 15, 10, 0, 0, tzinfo=timezone.utc)
+    ev = client.post(
+        "/events/me",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "title": "KO Elim",
+            "sport_type": "Soccer",
+            "venue_name": "Stadium",
+            "lat": 12.0,
+            "long": 77.0,
+            "price": 100.0,
+            "max_slots": 16,
+            "registration_start": reg_open.isoformat().replace("+00:00", "Z"),
+            "registration_end": reg_close.isoformat().replace("+00:00", "Z"),
+            "start_time": match_start.isoformat().replace("+00:00", "Z"),
+            "status": 1,
+            "registration_mode": "team",
+            "competition_format": "knockout",
+        },
+    )
+    assert ev.status_code == 200, ev.text
+    event_id = ev.json()["id"]
+
+    tids = []
+    for tok, name in zip(players, ("S1", "S2", "S3"), strict=True):
+        b = client.post(
+            f"/events/{event_id}/bookings/me",
+            headers={"Authorization": f"Bearer {tok}"},
+            json={"team_name": name},
+        )
+        assert b.status_code == 200
+        tids.append(b.json()["team_id"])
+
+    t1, t2, t3 = tids
+    early = datetime(2026, 12, 12, 10, 0, 0, tzinfo=timezone.utc)
+    late = datetime(2026, 12, 12, 18, 0, 0, tzinfo=timezone.utc)
+
+    bad = client.put(
+        f"/events/{event_id}/schedule",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "matches": [
+                {
+                    "id": 1,
+                    "home_team_id": t2,
+                    "away_team_id": t3,
+                    "home_team_name": "S2",
+                    "away_team_name": "S3",
+                    "scheduled_at": early.isoformat().replace("+00:00", "Z"),
+                    "status": "finished",
+                    "home_score": 2,
+                    "away_score": 0,
+                },
+                {
+                    "id": 2,
+                    "home_team_id": t3,
+                    "away_team_id": t1,
+                    "home_team_name": "S3",
+                    "away_team_name": "S1",
+                    "scheduled_at": late.isoformat().replace("+00:00", "Z"),
+                },
+            ]
+        },
+    )
+    assert bad.status_code == 400

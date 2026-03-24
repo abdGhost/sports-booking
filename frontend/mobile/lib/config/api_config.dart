@@ -37,9 +37,15 @@ class ApiConfig {
       if (uri.host == '10.0.2.2') {
         return uri.replace(host: '127.0.0.1').toString();
       }
+      // Match the dev server host (usually localhost) so CORS + PNA work in the browser.
+      if (uri.host == '127.0.0.1') {
+        return uri.replace(host: 'localhost').toString();
+      }
       return raw;
     } catch (_) {
-      return raw.replaceFirst('10.0.2.2', '127.0.0.1');
+      return raw
+          .replaceFirst('10.0.2.2', '127.0.0.1')
+          .replaceFirst('127.0.0.1', 'localhost');
     }
   }
 
@@ -60,8 +66,11 @@ class ApiConfig {
         return 'http://$local:$_effectivePort';
       }
     }
+    // Flutter web is usually served at http://localhost:<port>. Use the same host
+    // for the API so the browser does not treat 127.0.0.1 as a different origin
+    // (PUT + Authorization preflight can otherwise fail silently).
     if (kIsWeb) {
-      return 'http://127.0.0.1:$_effectivePort';
+      return 'http://localhost:$_effectivePort';
     }
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:

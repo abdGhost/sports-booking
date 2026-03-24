@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'app_route_observer.dart';
 import 'providers/auth_provider.dart';
 import 'providers/event_provider.dart';
 import 'providers/location_provider.dart';
@@ -40,6 +41,7 @@ class SportsBookingApp extends StatelessWidget {
         theme: SportsAppTheme.build(),
         themeMode: ThemeMode.light,
         debugShowCheckedModeBanner: false,
+        navigatorObservers: [appRouteObserver],
         home: const FirstLaunchGate(child: AuthGate()),
       ),
     );

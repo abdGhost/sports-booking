@@ -13,6 +13,7 @@ import '../utils/inr_money.dart';
 import '../widgets/sports_components.dart';
 import 'create_event_screen.dart';
 import 'event_detail_screen.dart';
+import 'help_support_screen.dart';
 import 'my_bookings_screen.dart';
 import 'organizer_events_screen.dart';
 
@@ -1284,9 +1285,9 @@ class _ProfileTab extends StatelessWidget {
                                   label: 'Help & support',
                                   showTopDivider: true,
                                   onTap: () {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('Support coming soon.'),
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute<void>(
+                                        builder: (_) => const HelpSupportScreen(),
                                       ),
                                     );
                                   },

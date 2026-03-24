@@ -92,6 +92,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_private_network=True,
 )
 
 
@@ -1169,6 +1170,88 @@ def _validate_fixture_teams(m: ScheduledMatchItem, team_ids: set[int]) -> None:
         )
 
 
+def _normalize_competition_format(ev: SportEvent) -> str:
+    return (ev.competition_format or "knockout").strip().lower()
+
+
+def _unordered_team_pair(home_id: int, away_id: int) -> tuple[int, int]:
+    return (home_id, away_id) if home_id < away_id else (away_id, home_id)
+
+
+def _max_fixtures_per_squad_pair(competition_format: str) -> int:
+    """League / group stage allow home-and-away; single elimination allows one meeting."""
+    if competition_format in ("league", "group_knockout"):
+        return 2
+    return 1
+
+
+def _knockout_loser_team_id(m: ScheduledMatchItem) -> int | None:
+    if m.status != "finished":
+        return None
+    if m.home_score is None or m.away_score is None:
+        return None
+    if m.home_score > m.away_score:
+        return m.away_team_id
+    if m.away_score > m.home_score:
+        return m.home_team_id
+    return None
+
+
+def _fixture_order_key(m: ScheduledMatchItem) -> tuple:
+    """Later fixtures sort greater; unscheduled last (by id)."""
+    ts = m.scheduled_at
+    if ts is None:
+        return (1, m.id)
+    return (0, ts, m.id)
+
+
+def _validate_schedule_competition_rules(ev: SportEvent, matches: list[ScheduledMatchItem]) -> None:
+    """Enforce squad-pair limits and (for knockout) single-elimination-style elimination."""
+    fmt = _normalize_competition_format(ev)
+    max_per_pair = _max_fixtures_per_squad_pair(fmt)
+    pair_counts: dict[tuple[int, int], int] = {}
+    for m in matches:
+        pair = _unordered_team_pair(m.home_team_id, m.away_team_id)
+        pair_counts[pair] = pair_counts.get(pair, 0) + 1
+        if pair_counts[pair] > max_per_pair:
+            if max_per_pair == 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="This squad pairing already has a fixture. In knockout, each pair can only meet once.",
+                )
+            raise HTTPException(
+                status_code=400,
+                detail="This squad pairing already has two fixtures (home and away). Remove one before adding another.",
+            )
+
+    if fmt != "knockout":
+        return
+
+    # Single elimination: after a finished loss, a squad cannot appear in a later fixture
+    # (earlier fixtures on the schedule, e.g. a win, remain valid).
+    loss_match: dict[int, ScheduledMatchItem] = {}
+    for m in matches:
+        lid = _knockout_loser_team_id(m)
+        if lid is None:
+            continue
+        prev = loss_match.get(lid)
+        if prev is None or _fixture_order_key(m) > _fixture_order_key(prev):
+            loss_match[lid] = m
+
+    for m in matches:
+        for tid in (m.home_team_id, m.away_team_id):
+            lost_in = loss_match.get(tid)
+            if lost_in is None:
+                continue
+            if m.id == lost_in.id:
+                continue
+            if _fixture_order_key(m) > _fixture_order_key(lost_in):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Knockout: a squad eliminated in a finished match cannot be scheduled in a later fixture",
+                )
+
+
 @app.get("/events/{event_id}/schedule", response_model=EventScheduleRead)
 def get_event_schedule(event_id: int, db: Session = Depends(get_db)) -> EventScheduleRead:
     """Public: squad vs squad fixtures set by the organizer (`extra_config.scheduled_matches`)."""
@@ -1205,6 +1288,8 @@ def put_event_schedule(
             raise HTTPException(status_code=400, detail=f"Duplicate match id {m.id}")
         seen.add(m.id)
         _validate_fixture_teams(m, team_ids)
+
+    _validate_schedule_competition_rules(ev, payload.matches)
 
     serialized = [m.model_dump(mode="json") for m in payload.matches]
 
@@ -1260,7 +1345,20 @@ def patch_event_schedule_match(
     team_ids = set(teams.keys())
     _validate_fixture_teams(item, team_ids)
 
-    raw_list[idx] = item.model_dump(mode="json")
+    updated: list[ScheduledMatchItem] = []
+    for i, row in enumerate(raw_list):
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=400, detail="Invalid schedule row")
+        if i == idx:
+            updated.append(item)
+        else:
+            try:
+                updated.append(ScheduledMatchItem.model_validate(row))
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid fixture data: {e}") from e
+    _validate_schedule_competition_rules(ev, updated)
+
+    raw_list = [m.model_dump(mode="json") for m in updated]
     base["scheduled_matches"] = raw_list
     ev.extra_config = base
     flag_modified(ev, "extra_config")

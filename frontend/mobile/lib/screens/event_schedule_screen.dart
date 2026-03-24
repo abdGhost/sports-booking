@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../app_route_observer.dart';
 import '../config/api_config.dart';
 import '../models/scheduled_match.dart';
 import '../models/sport_event.dart';
@@ -22,14 +23,40 @@ class EventScheduleScreen extends StatefulWidget {
   State<EventScheduleScreen> createState() => _EventScheduleScreenState();
 }
 
-class _EventScheduleScreenState extends State<EventScheduleScreen> {
+class _EventScheduleScreenState extends State<EventScheduleScreen>
+    with RouteAware {
   List<ScheduledMatchItem>? _matches;
   String? _error;
   bool _loading = true;
+  bool _routeListening = false;
 
   @override
   void initState() {
     super.initState();
+    _load();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_routeListening) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) {
+      appRouteObserver.subscribe(this, route);
+      _routeListening = true;
+    }
+  }
+
+  @override
+  void dispose() {
+    appRouteObserver.unsubscribe(this);
+    super.dispose();
+  }
+
+  @override
+  void didPopNext() {
     _load();
   }
 
@@ -79,6 +106,20 @@ class _EventScheduleScreenState extends State<EventScheduleScreen> {
         u.id == widget.event.organizerId;
   }
 
+  Future<void> _openSingleMatchEditor(ScheduledMatchItem m) async {
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => OrganizerScheduleEditorScreen(
+          event: widget.event,
+          singleMatchEditId: m.id,
+        ),
+      ),
+    );
+    if (ok == true && mounted) {
+      await _load();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -95,29 +136,6 @@ class _EventScheduleScreenState extends State<EventScheduleScreen> {
         ),
         backgroundColor: SportsAppColors.pageBackground,
         surfaceTintColor: Colors.transparent,
-        actions: [
-          if (_canEdit)
-            TextButton(
-              onPressed: () async {
-                final ok = await Navigator.of(context).push<bool>(
-                  MaterialPageRoute<bool>(
-                    builder: (_) =>
-                        OrganizerScheduleEditorScreen(event: widget.event),
-                  ),
-                );
-                if (ok == true && mounted) {
-                  await _load();
-                }
-              },
-              child: Text(
-                'Edit',
-                style: theme.textTheme.labelLarge?.copyWith(
-                  color: SportsAppColors.cyan,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
           child: Container(
@@ -230,114 +248,141 @@ class _EventScheduleScreenState extends State<EventScheduleScreen> {
         final when = m.scheduledAt != null
             ? DateFormat('EEE d MMM · h:mm a').format(m.scheduledAt!.toLocal())
             : 'Time TBD';
-        return Container(
-          decoration: sportsCardDecoration(),
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (m.round != null && m.round!.trim().isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Text(
-                    m.round!.trim().toUpperCase(),
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: SportsAppColors.cyan,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                ),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Text(
-                      m.homeTeamName,
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: SportsAppColors.accentBlue900,
-                      ),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Text(
-                      'VS',
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: SportsAppColors.textMuted,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: Text(
-                      m.awayTeamName,
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: SportsAppColors.accentBlue900,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Icon(
-                    Icons.schedule_rounded,
-                    size: 18,
-                    color: SportsAppColors.textMuted,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      when,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: SportsAppColors.navy,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              if (m.venue != null && m.venue!.trim().isNotEmpty) ...[
-                const SizedBox(height: 6),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: _canEdit ? () => _openSingleMatchEditor(m) : null,
+            borderRadius: BorderRadius.circular(24),
+            child: Ink(
+              decoration: sportsCardDecoration(),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 8, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(
-                      Icons.place_outlined,
-                      size: 18,
-                      color: SportsAppColors.textMuted,
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: m.round != null && m.round!.trim().isNotEmpty
+                              ? Padding(
+                                  padding:
+                                      const EdgeInsets.only(top: 4, bottom: 10),
+                                  child: Text(
+                                    m.round!.trim().toUpperCase(),
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: SportsAppColors.cyan,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 0.8,
+                                    ),
+                                  ),
+                                )
+                              : const SizedBox(height: 8),
+                        ),
+                        if (_canEdit)
+                          IconButton(
+                            tooltip: 'Edit this match',
+                            onPressed: () => _openSingleMatchEditor(m),
+                            icon: Icon(
+                              Icons.edit_rounded,
+                              color: SportsAppColors.cyan.withValues(alpha: 0.95),
+                            ),
+                          ),
+                      ],
                     ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        m.venue!.trim(),
-                        style: theme.textTheme.bodySmall?.copyWith(
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            m.homeTeamName,
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w900,
+                              color: SportsAppColors.accentBlue900,
+                            ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: Text(
+                            'VS',
+                            style: theme.textTheme.labelLarge?.copyWith(
+                              color: SportsAppColors.textMuted,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            m.awayTeamName,
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w900,
+                              color: SportsAppColors.accentBlue900,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.schedule_rounded,
+                          size: 18,
                           color: SportsAppColors.textMuted,
-                          fontWeight: FontWeight.w600,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            when,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: SportsAppColors.navy,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (m.venue != null && m.venue!.trim().isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.place_outlined,
+                            size: 18,
+                            color: SportsAppColors.textMuted,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              m.venue!.trim(),
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: SportsAppColors.textMuted,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (m.notes != null && m.notes!.trim().isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        m.notes!.trim(),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: SportsAppColors.textPrimary,
+                          fontWeight: FontWeight.w500,
+                          height: 1.35,
                         ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
-              ],
-              if (m.notes != null && m.notes!.trim().isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(
-                  m.notes!.trim(),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: SportsAppColors.textPrimary,
-                    fontWeight: FontWeight.w500,
-                    height: 1.35,
-                  ),
-                ),
-              ],
-            ],
+              ),
+            ),
           ),
         );
       },
