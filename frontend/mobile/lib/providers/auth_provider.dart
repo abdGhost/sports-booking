@@ -64,6 +64,27 @@ class AuthProvider extends ChangeNotifier {
     user = AppUser.fromJson(map);
   }
 
+  /// Merge profile fields from an API response (e.g. `PATCH /auth/me/location`).
+  void applyUserFromJson(Map<String, dynamic> map) {
+    user = AppUser.fromJson(map);
+    notifyListeners();
+  }
+
+  /// Reload profile from `GET /auth/me` (same token).
+  Future<bool> refreshProfile() async {
+    final t = token;
+    if (t == null) {
+      return false;
+    }
+    try {
+      await _fetchMe();
+      notifyListeners();
+      return user != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _persistToken(String? t) async {
     final prefs = await SharedPreferences.getInstance();
     if (t == null || t.isEmpty) {

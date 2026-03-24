@@ -93,6 +93,8 @@ class Booking(Base):
     event_id: Mapped[int] = mapped_column(ForeignKey("sport_events.id"), nullable=False, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     payment_status: Mapped[str] = mapped_column(String(50), default="pending")
+    #: Stripe PaymentIntent id when paying by card (pending until webhook).
+    stripe_payment_intent_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     team_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: Squad display name (shared by all members of the same team_id for this event).
     team_name: Mapped[str | None] = mapped_column(String(120), nullable=True)

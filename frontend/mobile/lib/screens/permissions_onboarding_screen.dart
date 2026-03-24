@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../config/api_config.dart';
 import '../providers/location_provider.dart';
 import '../theme/sports_app_theme.dart';
 
@@ -29,10 +30,10 @@ class _PermissionsOnboardingScreenState extends State<PermissionsOnboardingScree
       return true;
     }
     try {
-      final response = await http
-          .head(Uri.parse('https://clients3.google.com/generate_204'))
-          .timeout(const Duration(seconds: 4));
-      return response.statusCode == 204 || response.statusCode == 200;
+      final uri = Uri.parse('${ApiConfig.baseUrl}/health');
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 6));
+      return response.statusCode == 200;
     } catch (_) {
       return false;
     }
@@ -50,9 +51,10 @@ class _PermissionsOnboardingScreenState extends State<PermissionsOnboardingScree
       }
       if (!online) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
+          SnackBar(
             content: Text(
-              'Connect to Wi‑Fi or mobile data, then try again.',
+              'Could not reach the app server at ${ApiConfig.baseUrl}. '
+              'Connect to Wi‑Fi or mobile data, start the API (or fix API_HOST), then try again.',
             ),
           ),
         );
@@ -127,14 +129,16 @@ class _PermissionsOnboardingScreenState extends State<PermissionsOnboardingScree
                             icon: Icons.wifi_rounded,
                             title: 'Internet',
                             body:
-                                'The app uses your network to sign in, load matches, and sync your profile. No extra permission is required on your phone.',
+                                'The app needs network access to sign in, load events, and save your location to your account. '
+                                'Android includes the Internet permission in the app; iOS uses the network automatically.',
                           ),
                           const SizedBox(height: 20),
                           _Bullet(
                             icon: Icons.location_on_rounded,
                             title: 'Location',
                             body:
-                                'We use your approximate location to show games near you and to label your area on the map. You can change this anytime in system settings.',
+                                'On the next step, your phone will ask to use your location so we can show nearby games and store coordinates with your profile. '
+                                'You can change this later in system settings.',
                           ),
                         ],
                       ),

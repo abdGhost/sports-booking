@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:provider/provider.dart';
 
 import 'app_route_observer.dart';
@@ -6,11 +8,15 @@ import 'providers/auth_provider.dart';
 import 'providers/event_provider.dart';
 import 'providers/location_provider.dart';
 import 'theme/sports_app_theme.dart';
+import 'widgets/app_onboarding_gate.dart';
 import 'widgets/auth_gate.dart';
 import 'widgets/first_launch_gate.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  final widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
+  if (!kIsWeb) {
+    FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
+  }
   final auth = AuthProvider();
   await auth.init();
   final location = LocationProvider(auth);
@@ -42,7 +48,11 @@ class SportsBookingApp extends StatelessWidget {
         themeMode: ThemeMode.light,
         debugShowCheckedModeBanner: false,
         navigatorObservers: [appRouteObserver],
-        home: const FirstLaunchGate(child: AuthGate()),
+        home: const AppOnboardingGate(
+          child: FirstLaunchGate(
+            child: AuthGate(),
+          ),
+        ),
       ),
     );
   }

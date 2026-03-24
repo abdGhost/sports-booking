@@ -6,10 +6,13 @@ from collections.abc import Generator
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from models import Base
+
+load_dotenv()
 
 # In-memory SQLite for local dev; swap URL for production PostgreSQL etc.
 # Tests set DATABASE_URL=sqlite:///:memory: before importing `main`.
@@ -35,6 +38,7 @@ def init_db() -> None:
     _sqlite_add_sport_event_registration_window_columns()
     _sqlite_add_booking_checkin_address_column()
     _sqlite_add_booking_team_name_column()
+    _sqlite_add_booking_stripe_payment_intent_column()
 
 
 def _sqlite_add_password_hash_column() -> None:
@@ -156,6 +160,20 @@ def _sqlite_add_booking_team_name_column() -> None:
         col_names = {r[1] for r in rows}
         if "team_name" not in col_names:
             conn.execute(text("ALTER TABLE bookings ADD COLUMN team_name VARCHAR(120)"))
+            conn.commit()
+
+
+def _sqlite_add_booking_stripe_payment_intent_column() -> None:
+    """Stripe PaymentIntent id for card checkout."""
+    if not str(engine.url).startswith("sqlite"):
+        return
+    with engine.connect() as conn:
+        rows = conn.execute(text("PRAGMA table_info(bookings)")).fetchall()
+        col_names = {r[1] for r in rows}
+        if "stripe_payment_intent_id" not in col_names:
+            conn.execute(
+                text("ALTER TABLE bookings ADD COLUMN stripe_payment_intent_id VARCHAR(255)")
+            )
             conn.commit()
 
 

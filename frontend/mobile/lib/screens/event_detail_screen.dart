@@ -1,6 +1,8 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_stripe/flutter_stripe.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -166,6 +168,249 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     } catch (_) {}
   }
 
+  Widget _entryFeeFreeCheckoutCard(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: SportsAppColors.navy.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: SportsAppColors.border.withValues(alpha: 0.55),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Entry fee',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: SportsAppColors.textMuted,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.4,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            formatInr(_event.price),
+            style: theme.textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.w900,
+              color: SportsAppColors.accentBlue900,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.verified_rounded,
+                color: SportsAppColors.cyan,
+                size: 22,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Free checkout',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: SportsAppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'No card charge in this version. Your booking is recorded as paid.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: SportsAppColors.textMuted,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _paymentMethodSection(
+    BuildContext context, {
+    required double price,
+    required String selected,
+    required void Function(String value) onChanged,
+  }) {
+    final theme = Theme.of(context);
+    if (price <= 0) {
+      return _entryFeeFreeCheckoutCard(context);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Entry fee',
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: SportsAppColors.textMuted,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.4,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          formatInr(price),
+          style: theme.textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.w900,
+            color: SportsAppColors.accentBlue900,
+          ),
+        ),
+        const SizedBox(height: 8),
+        RadioListTile<String>(
+          value: 'free',
+          groupValue: selected,
+          onChanged: (v) => onChanged(v!),
+          title: const Text('Free checkout (demo)'),
+          subtitle: Text(
+            'No card charge. Booking is marked paid.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: SportsAppColors.textMuted,
+              height: 1.35,
+            ),
+          ),
+          activeColor: SportsAppColors.cyan,
+        ),
+        RadioListTile<String>(
+          value: 'card',
+          groupValue: selected,
+          onChanged: (v) => onChanged(v!),
+          title: const Text('Pay with card'),
+          subtitle: Text(
+            'Stripe (INR). Confirm in the payment sheet; we mark paid when Stripe confirms.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: SportsAppColors.textMuted,
+              height: 1.35,
+            ),
+          ),
+          activeColor: SportsAppColors.cyan,
+        ),
+      ],
+    );
+  }
+
+  Future<void> _completeStripeCheckout(
+    String clientSecret,
+    String publishableKey,
+  ) async {
+    Stripe.publishableKey = publishableKey;
+    await Stripe.instance.initPaymentSheet(
+      paymentSheetParameters: SetupPaymentSheetParameters(
+        paymentIntentClientSecret: clientSecret,
+        merchantDisplayName: 'Sports Booking',
+      ),
+    );
+    await Stripe.instance.presentPaymentSheet();
+    if (!mounted) {
+      return;
+    }
+    await _pollUntilBookingPaid();
+  }
+
+  Future<void> _pollUntilBookingPaid() async {
+    final auth = context.read<AuthProvider>();
+    final uri = Uri.parse(
+      '${ApiConfig.baseUrl}/events/${_event.id}/bookings/me',
+    );
+    for (var i = 0; i < 24; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (!mounted) {
+        return;
+      }
+      final r = await http.get(uri, headers: auth.authHeaders());
+      if (r.statusCode == 200) {
+        final m = jsonDecode(r.body) as Map<String, dynamic>;
+        if (m['payment_status'] == 'paid') {
+          return;
+        }
+      }
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Payment is still processing. Check My bookings in a moment.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<String?> _showIndividualFreeCheckoutSheet() {
+    return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: SportsAppColors.card,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        var payMethod = 'free';
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 16,
+            bottom: MediaQuery.viewInsetsOf(ctx).bottom + 20,
+          ),
+          child: StatefulBuilder(
+            builder: (ctx, setModal) {
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Confirm registration',
+                    style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w900,
+                          color: SportsAppColors.accentBlue900,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'You’re booking this match as an individual player.',
+                    style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                          color: SportsAppColors.textMuted,
+                          height: 1.35,
+                        ),
+                  ),
+                  const SizedBox(height: 16),
+                  _paymentMethodSection(
+                    ctx,
+                    price: _event.price,
+                    selected: payMethod,
+                    onChanged: (v) => setModal(() => payMethod = v),
+                  ),
+                  const SizedBox(height: 20),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(ctx, payMethod),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: SportsAppColors.navy,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                    child: const Text('Complete registration'),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _onBookPressed() async {
     final auth = context.read<AuthProvider>();
     if (!auth.isLoggedIn) {
@@ -183,11 +428,12 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
 
     String? teamName;
     int? joinTeamId;
+    var paymentMethod = 'free';
 
     if (_event.registrationMode == 'team') {
       final squadCtrl = TextEditingController();
       final joinCtrl = TextEditingController();
-      final ok = await showModalBottomSheet<bool>(
+      final sheetResult = await showModalBottomSheet<String>(
         context: context,
         isScrollControlled: true,
         backgroundColor: SportsAppColors.card,
@@ -195,6 +441,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
         builder: (ctx) {
+          var payMethod = 'free';
           return Padding(
             padding: EdgeInsets.only(
               left: 20,
@@ -202,56 +449,78 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
               top: 16,
               bottom: MediaQuery.viewInsetsOf(ctx).bottom + 20,
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Register your squad',
-                  style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: SportsAppColors.accentBlue900,
+            child: StatefulBuilder(
+              builder: (ctx, setModal) {
+                return SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'Register your squad',
+                        style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w900,
+                              color: SportsAppColors.accentBlue900,
+                            ),
                       ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Create a new squad name, or enter your captain’s squad ID to join.',
-                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                        color: SportsAppColors.textMuted,
-                        height: 1.35,
+                      const SizedBox(height: 8),
+                      Text(
+                        'Create a new squad name, or enter your captain’s squad ID to join.',
+                        style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                              color: SportsAppColors.textMuted,
+                              height: 1.35,
+                            ),
                       ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: squadCtrl,
-                  textCapitalization: TextCapitalization.words,
-                  decoration: const InputDecoration(
-                    labelText: 'New squad name',
-                    hintText: 'e.g. Silchar Youth FC',
-                    border: OutlineInputBorder(),
+                      const SizedBox(height: 16),
+                      _paymentMethodSection(
+                        ctx,
+                        price: _event.price,
+                        selected: payMethod,
+                        onChanged: (v) => setModal(() => payMethod = v),
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        'Squad details',
+                        style: Theme.of(ctx).textTheme.labelSmall?.copyWith(
+                              color: SportsAppColors.textMuted,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.5,
+                            ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: squadCtrl,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'New squad name',
+                          hintText: 'e.g. Silchar Youth FC',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: joinCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Or join squad ID',
+                          hintText: 'Number from your captain',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(ctx, payMethod),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: SportsAppColors.navy,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: const Text('Complete registration'),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: joinCtrl,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Or join squad ID',
-                    hintText: 'Number from your captain',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                FilledButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: SportsAppColors.navy,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  child: const Text('Continue'),
-                ),
-              ],
+                );
+              },
             ),
           );
         },
@@ -263,9 +532,10 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
       }
       squadCtrl.dispose();
       joinCtrl.dispose();
-      if (ok != true || !mounted) {
+      if (sheetResult == null || !mounted) {
         return;
       }
+      paymentMethod = sheetResult;
       if (joinTeamId == null &&
           (teamName == null || teamName.isEmpty)) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -281,11 +551,19 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         );
         return;
       }
+    } else {
+      final pm = await _showIndividualFreeCheckoutSheet();
+      if (pm == null || !mounted) {
+        return;
+      }
+      paymentMethod = pm;
     }
 
     setState(() => _booking = true);
     final uri = Uri.parse('${ApiConfig.baseUrl}/events/${_event.id}/bookings/me');
-    final body = <String, dynamic>{};
+    final body = <String, dynamic>{
+      'payment_method': paymentMethod,
+    };
     if (_event.registrationMode == 'team') {
       if (joinTeamId != null) {
         body['join_team_id'] = joinTeamId;
@@ -321,12 +599,53 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
         return;
       }
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final tid = data['team_id'];
+      final secret = data['payment_client_secret'] as String?;
+      final pk = data['stripe_publishable_key'] as String?;
+      final needsStripe = secret != null &&
+          pk != null &&
+          secret.isNotEmpty &&
+          pk.isNotEmpty;
+
+      if (needsStripe) {
+        if (kIsWeb) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Card checkout is not available on web in this build.',
+              ),
+            ),
+          );
+        } else {
+          try {
+            await _completeStripeCheckout(secret, pk);
+          } on StripeException catch (e) {
+            if (e.error.code == FailureCode.Canceled) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Payment cancelled.')),
+                );
+              }
+              return;
+            }
+            if (mounted) {
+              final errMsg = e.error.localizedMessage ??
+                  e.error.message ??
+                  'Payment failed';
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(errMsg)),
+              );
+            }
+            return;
+          }
+        }
+      }
+
       await _reloadEvent();
       if (!mounted) {
         return;
       }
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final tid = data['team_id'];
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -1195,7 +1514,11 @@ class _EventDetailCtaBar extends StatelessWidget {
                           ),
                         )
                       : Text(
-                          event.isFull ? 'Sold out' : 'Book now',
+                          event.isFull
+                              ? 'Sold out'
+                              : (event.registrationMode == 'team'
+                                  ? 'Register squad'
+                                  : 'Book now'),
                           style: theme.textTheme.titleSmall?.copyWith(
                             fontWeight: FontWeight.w900,
                             letterSpacing: 0.2,

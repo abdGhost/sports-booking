@@ -5,10 +5,13 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ.setdefault("STRIPE_SECRET_KEY", "sk_test_fake")
+os.environ.setdefault("STRIPE_PUBLISHABLE_KEY", "pk_test_fake")
 
 from fastapi.testclient import TestClient
 
@@ -24,6 +27,12 @@ def client() -> TestClient:
 
 def _unique_email() -> str:
     return f"api_test_{uuid.uuid4().hex[:10]}@example.com"
+
+
+def test_health(client: TestClient) -> None:
+    r = client.get("/health")
+    assert r.status_code == 200, r.text
+    assert r.json().get("status") == "ok"
 
 
 def test_register_player_and_login(client: TestClient) -> None:
@@ -331,6 +340,7 @@ def test_player_books_team_event_with_squad_name(client: TestClient) -> None:
     assert book.status_code == 200, book.text
     assert book.json()["team_name"] == "Silchar FC"
     assert book.json()["team_id"] == 1
+    assert book.json()["payment_status"] == "paid"
 
     roster = client.get(f"/events/{event_id}/bookings")
     assert roster.status_code == 200
@@ -452,6 +462,8 @@ def test_event_schedule_get_and_put(client: TestClient) -> None:
     )
     assert b1.status_code == 200
     assert b2.status_code == 200
+    assert b1.json()["payment_status"] == "paid"
+    assert b2.json()["payment_status"] == "paid"
     tid1 = b1.json()["team_id"]
     tid2 = b2.json()["team_id"]
 
@@ -564,6 +576,8 @@ def test_event_schedule_patch_and_delete_match(client: TestClient) -> None:
     )
     assert b1.status_code == 200
     assert b2.status_code == 200
+    assert b1.json()["payment_status"] == "paid"
+    assert b2.json()["payment_status"] == "paid"
     tid1 = b1.json()["team_id"]
     tid2 = b2.json()["team_id"]
 
@@ -712,6 +726,8 @@ def test_knockout_schedule_rejects_duplicate_pair(client: TestClient) -> None:
     )
     assert b1.status_code == 200
     assert b2.status_code == 200
+    assert b1.json()["payment_status"] == "paid"
+    assert b2.json()["payment_status"] == "paid"
     tid1 = b1.json()["team_id"]
     tid2 = b2.json()["team_id"]
 
@@ -814,6 +830,8 @@ def test_league_schedule_rejects_third_fixture_same_pair(client: TestClient) -> 
     )
     assert b1.status_code == 200
     assert b2.status_code == 200
+    assert b1.json()["payment_status"] == "paid"
+    assert b2.json()["payment_status"] == "paid"
     tid1 = b1.json()["team_id"]
     tid2 = b2.json()["team_id"]
 
@@ -949,3 +967,156 @@ def test_knockout_eliminated_squad_cannot_play_later_fixture(client: TestClient)
         },
     )
     assert bad.status_code == 400
+
+
+@patch("stripe.PaymentIntent.create")
+def test_booking_with_card_returns_stripe_client_secret(mock_pi: MagicMock, client: TestClient) -> None:
+    mock_pi.return_value = MagicMock(id="pi_test_abc", client_secret="pi_test_abc_secret")
+
+    org = client.post(
+        "/auth/register",
+        json={
+            "name": "Org Pay",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "organizer",
+        },
+    )
+    assert org.status_code == 200
+    org_token = org.json()["access_token"]
+    org_id = org.json()["user"]["id"]
+
+    pl = client.post(
+        "/auth/register",
+        json={
+            "name": "Player Pay",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    assert pl.status_code == 200
+    player_token = pl.json()["access_token"]
+
+    start = datetime(2026, 8, 1, 17, 0, 0, tzinfo=timezone.utc)
+    ev = client.post(
+        "/events/",
+        json={
+            "organizer_id": org_id,
+            "title": "Paid Cup",
+            "sport_type": "Soccer",
+            "lat": 12.0,
+            "long": 77.0,
+            "price": 150.0,
+            "max_slots": 8,
+            "start_time": start.isoformat().replace("+00:00", "Z"),
+            "status": 1,
+            "registration_mode": "team",
+        },
+    )
+    assert ev.status_code == 200, ev.text
+    event_id = ev.json()["id"]
+
+    book = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {player_token}"},
+        json={"team_name": "Pay FC", "payment_method": "card"},
+    )
+    assert book.status_code == 200, book.text
+    data = book.json()
+    assert data["payment_status"] == "pending"
+    assert data["payment_client_secret"] == "pi_test_abc_secret"
+    assert data["stripe_publishable_key"] == "pk_test_fake"
+    mock_pi.assert_called_once()
+
+
+@patch("stripe.PaymentIntent.create")
+@patch("stripe.Webhook.construct_event")
+def test_stripe_webhook_marks_booking_paid(
+    mock_construct: MagicMock,
+    mock_pi: MagicMock,
+    client: TestClient,
+) -> None:
+    os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test_fake"
+    mock_pi.return_value = MagicMock(id="pi_webhook_xyz", client_secret="pi_webhook_xyz_secret")
+
+    org = client.post(
+        "/auth/register",
+        json={
+            "name": "Org WH",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "organizer",
+        },
+    )
+    assert org.status_code == 200
+    org_token = org.json()["access_token"]
+    org_id = org.json()["user"]["id"]
+
+    pl = client.post(
+        "/auth/register",
+        json={
+            "name": "Player WH",
+            "email": _unique_email(),
+            "password": "password12",
+            "role": "player",
+        },
+    )
+    assert pl.status_code == 200
+    player_token = pl.json()["access_token"]
+
+    start = datetime(2026, 9, 1, 17, 0, 0, tzinfo=timezone.utc)
+    ev = client.post(
+        "/events/",
+        json={
+            "organizer_id": org_id,
+            "title": "WH Cup",
+            "sport_type": "Soccer",
+            "lat": 12.0,
+            "long": 77.0,
+            "price": 200.0,
+            "max_slots": 8,
+            "start_time": start.isoformat().replace("+00:00", "Z"),
+            "status": 1,
+            "registration_mode": "team",
+        },
+    )
+    assert ev.status_code == 200, ev.text
+    event_id = ev.json()["id"]
+
+    book = client.post(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {player_token}"},
+        json={"team_name": "WH FC", "payment_method": "card"},
+    )
+    assert book.status_code == 200, book.text
+    booking_id = book.json()["booking_id"]
+
+    mock_construct.return_value = {
+        "type": "payment_intent.succeeded",
+        "data": {
+            "object": {
+                "id": "pi_webhook_xyz",
+                "metadata": {"booking_id": str(booking_id)},
+            }
+        },
+    }
+    wh = client.post(
+        "/webhooks/stripe",
+        content=b"{}",
+        headers={"stripe-signature": "t=0,v1=test"},
+    )
+    assert wh.status_code == 200, wh.text
+
+    mine = client.get("/me/bookings", headers={"Authorization": f"Bearer {player_token}"})
+    assert mine.status_code == 200
+    rows = [x for x in mine.json() if x["booking_id"] == booking_id]
+    assert len(rows) == 1
+    assert rows[0]["payment_status"] == "paid"
+
+    poll = client.get(
+        f"/events/{event_id}/bookings/me",
+        headers={"Authorization": f"Bearer {player_token}"},
+    )
+    assert poll.status_code == 200
+    assert poll.json()["payment_status"] == "paid"

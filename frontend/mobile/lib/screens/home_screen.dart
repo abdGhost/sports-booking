@@ -1008,21 +1008,7 @@ class _ProfileTab extends StatelessWidget {
                 slivers: [
                   SliverToBoxAdapter(
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 2, 20, 0),
-                      child: Text(
-                        'Profile',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 17,
-                          color: SportsAppColors.accentBlue900,
-                          letterSpacing: -0.3,
-                        ),
-                      ),
-                    ),
-                  ),
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
                       child: Column(
                         children: [
                           CircleAvatar(
@@ -1154,8 +1140,8 @@ class _ProfileTab extends StatelessWidget {
                             bottomSpacing: 10,
                             color: SportsAppColors.accentBlue900,
                           ),
-                          Consumer<LocationProvider>(
-                            builder: (context, loc, _) {
+                          Consumer2<LocationProvider, AuthProvider>(
+                            builder: (context, loc, auth, _) {
                               return Container(
                                 decoration: sportsCardDecoration(),
                                 clipBehavior: Clip.antiAlias,
@@ -1172,14 +1158,24 @@ class _ProfileTab extends StatelessWidget {
                                         if (!context.mounted) {
                                           return;
                                         }
-                                        final msg = loc.errorMessage;
+                                        final err = loc.errorMessage;
+                                        final String feedback;
+                                        if (err != null && err.isNotEmpty) {
+                                          feedback = err;
+                                        } else if (!auth.isLoggedIn) {
+                                          feedback =
+                                              'Location saved on this device. Sign in to sync it to your account.';
+                                        } else if (loc.lastServerSyncSucceeded) {
+                                          feedback =
+                                              'Location updated on your account.';
+                                        } else {
+                                          feedback =
+                                              'Location saved on this device. Could not reach the server — check your connection and try again.';
+                                        }
                                         ScaffoldMessenger.of(context).showSnackBar(
                                           SnackBar(
-                                            content: Text(
-                                              msg != null && msg.isNotEmpty
-                                                  ? msg
-                                                  : 'Location saved on this device',
-                                            ),
+                                            content: Text(feedback),
+                                            behavior: SnackBarBehavior.floating,
                                           ),
                                         );
                                       },

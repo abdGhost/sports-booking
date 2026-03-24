@@ -1,6 +1,7 @@
 """FastAPI application for the Sports Booking App."""
 
 import json
+import os
 from typing import Annotated
 import urllib.error
 import urllib.parse
@@ -8,7 +9,9 @@ import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query
+import stripe
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -18,6 +21,8 @@ from auth_utils import create_access_token, decode_access_token, hash_password, 
 from database import SessionLocal, get_db, init_db
 from haversine import haversine_km
 from models import Booking, EventStatus, SportEvent, User, UserRole
+load_dotenv()
+
 from schemas import (
     BookingAddressUpdate,
     BookingCreatePlayer,
@@ -84,15 +89,21 @@ def _backfill_missing_password_hashes() -> None:
 
 app = FastAPI(title="Sports Booking API", version="1.0.0", lifespan=lifespan)
 
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness probe and client connectivity check (no auth)."""
+    return {"status": "ok"}
+
+
 # Browsers reject Access-Control-Allow-Origin: * together with credentials.
 # Flutter web may be http://localhost:PORT or http://127.0.0.1:PORT — allow both + LAN dev.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?",
+    allow_origin_regex=r"https?://([a-z0-9-]+\.onrender\.com|localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_private_network=True,
 )
 
 
@@ -1463,6 +1474,39 @@ def patch_event_as_organizer(
     return ev
 
 
+def _stripe_publishable_key() -> str | None:
+    v = os.environ.get("STRIPE_PUBLISHABLE_KEY", "").strip()
+    return v or None
+
+
+def _inr_amount_paise(price: float) -> int:
+    """Stripe INR: minimum charge is 50 paise (0.50 INR)."""
+    if price <= 0:
+        return 0
+    return max(50, int(round(price * 100)))
+
+
+def _booking_player_read(
+    b: Booking,
+    u: User,
+    *,
+    payment_client_secret: str | None = None,
+    stripe_publishable_key: str | None = None,
+) -> BookingPlayerRead:
+    return BookingPlayerRead(
+        booking_id=b.id,
+        user_id=u.id,
+        name=u.name,
+        email=u.email,
+        payment_status=b.payment_status,
+        team_id=b.team_id,
+        team_name=b.team_name,
+        address=b.checkin_address,
+        payment_client_secret=payment_client_secret,
+        stripe_publishable_key=stripe_publishable_key,
+    )
+
+
 @app.get("/events/{event_id}/bookings", response_model=list[BookingPlayerRead])
 def list_event_bookings(event_id: int, db: Session = Depends(get_db)) -> list[BookingPlayerRead]:
     ev = db.get(SportEvent, event_id)
@@ -1474,19 +1518,30 @@ def list_event_bookings(event_id: int, db: Session = Depends(get_db)) -> list[Bo
         .where(Booking.event_id == event_id)
     )
     rows = db.execute(stmt).all()
-    return [
-        BookingPlayerRead(
-            booking_id=b.id,
-            user_id=u.id,
-            name=u.name,
-            email=u.email,
-            payment_status=b.payment_status,
-            team_id=b.team_id,
-            team_name=b.team_name,
-            address=b.checkin_address,
+    return [_booking_player_read(b, u) for b, u in rows]
+
+
+@app.get("/events/{event_id}/bookings/me", response_model=BookingPlayerRead)
+def get_my_booking_for_event(
+    event_id: int,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BookingPlayerRead:
+    """Current player’s booking for this event (poll after Stripe Payment Sheet)."""
+    if current.role != UserRole.PLAYER:
+        raise HTTPException(status_code=403, detail="Only players can view their bookings")
+    b = db.scalars(
+        select(Booking).where(
+            Booking.event_id == event_id,
+            Booking.user_id == current.id,
         )
-        for b, u in rows
-    ]
+    ).first()
+    if b is None:
+        raise HTTPException(status_code=404, detail="No booking for this event")
+    u = db.get(User, b.user_id)
+    if u is None:
+        raise HTTPException(status_code=500, detail="User missing for booking")
+    return _booking_player_read(b, u)
 
 
 @app.post("/events/{event_id}/bookings/me", response_model=BookingPlayerRead)
@@ -1549,10 +1604,31 @@ def create_my_booking(
         team_id = None
         team_name = None
 
+    wants_card = payload.payment_method == "card"
+    price = float(ev.price)
+
+    if wants_card and price > 0:
+        sk = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+        if not sk:
+            raise HTTPException(
+                status_code=503,
+                detail="Card payments are not configured. Set STRIPE_SECRET_KEY or use free checkout.",
+            )
+        if _stripe_publishable_key() is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Set STRIPE_PUBLISHABLE_KEY for card payments.",
+            )
+        payment_status = "pending"
+    elif wants_card and price <= 0:
+        payment_status = "paid"
+    else:
+        payment_status = "paid"
+
     b = Booking(
         event_id=event_id,
         user_id=current.id,
-        payment_status="pending",
+        payment_status=payment_status,
         team_id=team_id,
         team_name=team_name,
     )
@@ -1560,18 +1636,40 @@ def create_my_booking(
     ev.booked_slots += 1
     if ev.booked_slots >= ev.max_slots:
         ev.status = EventStatus.FULL.value
+    db.flush()
+
+    client_secret: str | None = None
+    pk_out: str | None = None
+
+    if wants_card and price > 0:
+        stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+        try:
+            pi = stripe.PaymentIntent.create(
+                amount=_inr_amount_paise(price),
+                currency="inr",
+                metadata={
+                    "booking_id": str(b.id),
+                    "event_id": str(event_id),
+                    "user_id": str(current.id),
+                },
+                automatic_payment_methods={"enabled": True},
+            )
+        except stripe.StripeError as e:
+            db.rollback()
+            msg = getattr(e, "user_message", None) or str(e)
+            raise HTTPException(status_code=502, detail=msg) from e
+        b.stripe_payment_intent_id = pi.id
+        client_secret = pi.client_secret
+        pk_out = _stripe_publishable_key()
+
     db.commit()
     db.refresh(b)
     u = current
-    return BookingPlayerRead(
-        booking_id=b.id,
-        user_id=u.id,
-        name=u.name,
-        email=str(u.email),
-        payment_status=b.payment_status,
-        team_id=b.team_id,
-        team_name=b.team_name,
-        address=b.checkin_address,
+    return _booking_player_read(
+        b,
+        u,
+        payment_client_secret=client_secret,
+        stripe_publishable_key=pk_out,
     )
 
 
@@ -1606,16 +1704,36 @@ def update_booking_checkin_address(
     u = db.get(User, b.user_id)
     if u is None:
         raise HTTPException(status_code=500, detail="User missing for booking")
-    return BookingPlayerRead(
-        booking_id=b.id,
-        user_id=u.id,
-        name=u.name,
-        email=u.email,
-        payment_status=b.payment_status,
-        team_id=b.team_id,
-        team_name=b.team_name,
-        address=b.checkin_address,
-    )
+    return _booking_player_read(b, u)
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)) -> dict[str, str | bool]:
+    """Stripe sends payment_intent.succeeded; we mark the booking paid (authoritative)."""
+    wh_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+    if not wh_secret:
+        raise HTTPException(status_code=503, detail="STRIPE_WEBHOOK_SECRET not set")
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature")
+    if not sig:
+        raise HTTPException(status_code=400, detail="Missing stripe-signature header")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, wh_secret)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid payload") from e
+    except stripe.SignatureVerificationError as e:
+        raise HTTPException(status_code=400, detail="Invalid signature") from e
+
+    if event["type"] == "payment_intent.succeeded":
+        pi = event["data"]["object"]
+        bid = pi.get("metadata", {}).get("booking_id")
+        pi_id = pi.get("id")
+        if bid is not None and pi_id is not None:
+            booking = db.get(Booking, int(bid))
+            if booking is not None and booking.stripe_payment_intent_id == pi_id:
+                booking.payment_status = "paid"
+                db.commit()
+    return {"received": True}
 
 
 def _mock_db_session() -> Session:

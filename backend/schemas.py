@@ -116,6 +116,9 @@ class BookingPlayerRead(BaseModel):
     team_id: int | None
     team_name: str | None = None
     address: str | None = None
+    #: Present only on create when card + paid amount; use with Stripe Payment Sheet.
+    payment_client_secret: str | None = None
+    stripe_publishable_key: str | None = None
 
 
 class MyBookingRead(BaseModel):
@@ -134,6 +137,8 @@ class BookingCreatePlayer(BaseModel):
 
     team_name: str | None = Field(default=None, max_length=120)
     join_team_id: int | None = Field(default=None, ge=1)
+    #: `free` completes immediately as paid (demo). `card` uses Stripe when price > 0.
+    payment_method: Literal["free", "card"] = "free"
 
 
 class BookingAddressUpdate(BaseModel):

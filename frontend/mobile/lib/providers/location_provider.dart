@@ -33,6 +33,8 @@ class LocationProvider extends ChangeNotifier {
   String? _address;
   bool _addressLoading = false;
   bool _geocodeEnabled = false;
+  /// Set by the last [syncToServer] attempt (when logged in).
+  bool _lastServerSyncOk = false;
 
   double? get lat => _lat;
   double? get lng => _lng;
@@ -55,6 +57,9 @@ class LocationProvider extends ChangeNotifier {
   }
 
   bool get addressLoading => _addressLoading;
+
+  /// Whether the last [syncToServer] call returned HTTP 200 (profile updated on backend).
+  bool get lastServerSyncSucceeded => _lastServerSyncOk;
 
   static const double _fallbackLat = 37.7749;
   static const double _fallbackLng = -122.4194;
@@ -115,11 +120,13 @@ class LocationProvider extends ChangeNotifier {
 
   void _onAuthChanged() {
     if (_auth.isLoggedIn && _lat != null && _lng != null) {
-      syncToServer();
+      unawaited(syncToServer());
     }
   }
 
-  Future<void> refreshFromDevice() async {
+  /// Requests permission, reads GPS, persists locally, and syncs to the API when signed in.
+  /// Returns `true` if a position was obtained (even if server sync failed).
+  Future<bool> refreshFromDevice() async {
     _loading = true;
     _errorMessage = null;
     notifyListeners();
@@ -127,7 +134,7 @@ class LocationProvider extends ChangeNotifier {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         _errorMessage = 'Location services are disabled.';
-        return;
+        return false;
       }
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
@@ -135,12 +142,12 @@ class LocationProvider extends ChangeNotifier {
       }
       if (permission == LocationPermission.denied) {
         _errorMessage = 'Location permission denied.';
-        return;
+        return false;
       }
       if (permission == LocationPermission.deniedForever) {
         _errorMessage =
             'Location permission is blocked. Enable it in Settings for nearby games.';
-        return;
+        return false;
       }
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
@@ -155,8 +162,10 @@ class LocationProvider extends ChangeNotifier {
         await syncToServer();
       }
       await refreshAddress();
+      return true;
     } catch (e) {
       _errorMessage = e.toString();
+      return false;
     } finally {
       _loading = false;
       notifyListeners();
@@ -176,14 +185,17 @@ class LocationProvider extends ChangeNotifier {
     await Geolocator.openAppSettings();
   }
 
-  Future<void> syncToServer() async {
+  /// Sends [last known coordinates] to `PATCH /auth/me/location` and merges the profile on success.
+  Future<bool> syncToServer() async {
     final t = _auth.token;
     if (t == null || _lat == null || _lng == null) {
-      return;
+      _lastServerSyncOk = false;
+      return false;
     }
+    _lastServerSyncOk = false;
     final uri = Uri.parse('${ApiConfig.baseUrl}/auth/me/location');
     try {
-      await http.patch(
+      final res = await http.patch(
         uri,
         headers: {
           'Content-Type': 'application/json',
@@ -191,9 +203,20 @@ class LocationProvider extends ChangeNotifier {
         },
         body: jsonEncode({'lat': _lat, 'long': _lng}),
       );
+      if (res.statusCode == 200) {
+        try {
+          final map = jsonDecode(res.body) as Map<String, dynamic>;
+          _auth.applyUserFromJson(map);
+        } catch (_) {}
+        _lastServerSyncOk = true;
+        notifyListeners();
+        return true;
+      }
     } catch (_) {
       // Offline or server down — local prefs still hold the last fix.
     }
+    notifyListeners();
+    return false;
   }
 
   @override
