@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
+from pydantic import BaseModel, Field
 
 from auth_utils import create_access_token, decode_access_token, hash_password, verify_password
 from database import SessionLocal, get_db, init_db
@@ -49,12 +50,20 @@ from schemas import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    _seed_demo_users_if_empty()
-    _seed_demo_events_if_empty()
-    _backfill_missing_password_hashes()
-    _seed_demo_knockout_schedule()
-    _seed_weekend_football_league()
-    _seed_sunset_football_7v7_squads()
+    enable_demo = os.environ.get("ENABLE_DEMO_SEEDS", "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    )
+    if enable_demo:
+        _seed_demo_users_if_empty()
+        _seed_demo_events_if_empty()
+        _backfill_missing_password_hashes()
+        _seed_demo_knockout_schedule()
+        _seed_weekend_football_league()
+        _seed_sunset_football_7v7_squads()
     yield
 
 
@@ -105,6 +114,95 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _require_admin_token(token: str | None) -> None:
+    expected = os.environ.get("ADMIN_RESET_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="ADMIN_RESET_TOKEN not configured")
+    if token is None or token.strip() != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+class AdminSeedRequest(BaseModel):
+    center_lat: float = Field(..., ge=-90, le=90)
+    center_long: float = Field(..., ge=-180, le=180)
+    radius_km: float = Field(default=25.0, gt=0, le=5000)
+    events: int = Field(default=20, ge=1, le=300)
+
+
+@app.post("/admin/reset")
+def admin_reset_db(
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """DANGEROUS: wipes all bookings + events (keeps users)."""
+    _require_admin_token(x_admin_token)
+    deleted_bookings = db.execute(text("DELETE FROM bookings")).rowcount or 0
+    deleted_events = db.execute(text("DELETE FROM sport_events")).rowcount or 0
+    db.commit()
+    return {"deleted_events": deleted_events, "deleted_bookings": deleted_bookings}
+
+
+@app.post("/admin/seed")
+def admin_seed_db(
+    payload: AdminSeedRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """Creates a batch of events around a coordinate (valid lat/long)."""
+    _require_admin_token(x_admin_token)
+    org = db.scalars(select(User).where(User.role == UserRole.ORGANIZER).order_by(User.id)).first()
+    if org is None:
+        raise HTTPException(status_code=400, detail="No organizer user exists; create one first.")
+
+    import random
+
+    sports = [
+        ("Soccer", "team"),
+        ("Cricket", "team"),
+        ("Basketball", "team"),
+        ("Volleyball", "team"),
+        ("Badminton", "individual"),
+        ("Tennis", "individual"),
+    ]
+
+    now = datetime.now(timezone.utc)
+    made = 0
+    for i in range(payload.events):
+        sport, mode = sports[i % len(sports)]
+        # crude random point around center (approx km -> deg)
+        dlat = (random.uniform(-1, 1) * payload.radius_km) / 110.574
+        dlon = (random.uniform(-1, 1) * payload.radius_km) / (111.320 * max(0.2, abs(payload.center_lat)))
+        lat = float(max(-90, min(90, payload.center_lat + dlat)))
+        lon = float(max(-180, min(180, payload.center_long + dlon)))
+
+        reg_start = now - timedelta(hours=1)
+        reg_end = now + timedelta(days=3)
+        start_time = now + timedelta(days=5 + (i % 7), hours=2)
+        ev = SportEvent(
+            organizer_id=org.id,
+            title=f"{sport} Test Event {i+1}",
+            sport_type=sport,
+            venue_name=f"Test Venue {i+1}",
+            description="Seeded event for live testing.",
+            duration_minutes=90 if sport != "Cricket" else 120,
+            lat=lat,
+            long=lon,
+            price=float(random.choice([0, 99, 149, 199, 249, 299])),
+            max_slots=16 if mode == "team" else 20,
+            start_time=start_time,
+            registration_start=reg_start,
+            registration_end=reg_end,
+            status=EventStatus.OPEN.value,
+            registration_mode=mode,
+            competition_format="knockout" if mode == "team" else "league",
+            age_group="Open",
+        )
+        db.add(ev)
+        made += 1
+    db.commit()
+    return {"created_events": made}
 
 
 def _seed_demo_users_if_empty() -> None:

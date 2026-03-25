@@ -17,3 +17,7 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: ENABLE_DEMO_SEEDS
+        sync: false
+      - key: ADMIN_RESET_TOKEN
+        sync: false
