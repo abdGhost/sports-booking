@@ -779,12 +779,16 @@ class _HomeHeroHeader extends StatelessWidget {
             SafeArea(
               bottom: false,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(22, 12, 14, 56),
+                // Keep this header compact; the floating search sits below and
+                // small devices can otherwise overflow.
+                padding: const EdgeInsets.fromLTRB(22, 12, 14, 16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
                           '$greeting,',
@@ -796,6 +800,8 @@ class _HomeHeroHeader extends StatelessWidget {
                         const SizedBox(height: 4),
                         Text(
                           firstName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: theme.textTheme.headlineMedium?.copyWith(
                             color: Colors.white,
                             fontWeight: FontWeight.w900,
@@ -813,6 +819,8 @@ class _HomeHeroHeader extends StatelessWidget {
                             const SizedBox(width: 8),
                             Text(
                               dateLine,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: theme.textTheme.bodyMedium?.copyWith(
                                 color: Colors.white.withValues(
                                   alpha: 0.88,
@@ -827,6 +835,8 @@ class _HomeHeroHeader extends StatelessWidget {
                     const SizedBox(height: 6),
                     Text(
                       tagline,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodyLarge?.copyWith(
                         color: Colors.white.withValues(alpha: 0.78),
                         fontWeight: FontWeight.w500,

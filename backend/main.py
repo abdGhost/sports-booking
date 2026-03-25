@@ -1018,6 +1018,21 @@ def geocode_reverse(
     lon: float = Query(..., ge=-180, le=180),
 ) -> dict[str, str]:
     """Reverse geocode via Nominatim — Flutter Web cannot use native geocoding."""
+    # In-memory cache to reduce upstream rate limiting (429).
+    # Keyed by rounded coordinates to avoid GPS jitter.
+    key = f"{round(lat, 4)},{round(lon, 4)}"
+    now = datetime.now(timezone.utc)
+    cache = getattr(app.state, "geocode_cache", None)
+    if cache is None:
+        cache = {}
+        app.state.geocode_cache = cache
+    hit = cache.get(key)
+    if hit is not None:
+        expires_at, payload = hit
+        if expires_at > now:
+            return payload
+        cache.pop(key, None)
+
     params = urllib.parse.urlencode(
         {
             "lat": lat,
@@ -1049,6 +1064,8 @@ def geocode_reverse(
     out: dict[str, str] = {"formatted_address": primary}
     if display:
         out["display_name"] = str(display)
+    # Cache successes for 30 minutes, failures for 2 minutes.
+    cache[key] = (now + timedelta(minutes=30), out)
     return out
 
 

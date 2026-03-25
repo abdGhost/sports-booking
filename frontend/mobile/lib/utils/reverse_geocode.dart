@@ -9,6 +9,23 @@ void _log(String message) {
   debugPrint('[Geocode] $message');
 }
 
+class _CacheEntry {
+  _CacheEntry(this.value, this.expiresAt);
+
+  final String? value;
+  final DateTime expiresAt;
+}
+
+String _cacheKey(double lat, double lng) {
+  // Round to ~11m precision so small GPS jitter doesn't spam requests.
+  final rLat = (lat * 10000).round() / 10000;
+  final rLng = (lng * 10000).round() / 10000;
+  return '$rLat,$rLng';
+}
+
+final Map<String, _CacheEntry> _reverseCache = <String, _CacheEntry>{};
+final Map<String, Future<String?>> _inflight = <String, Future<String?>>{};
+
 Future<String?> _reverseGeocodeWeb(double lat, double lng) async {
   try {
     final uri = Uri.parse('${ApiConfig.baseUrl}/geocode/reverse').replace(
@@ -40,7 +57,28 @@ Future<String?> _reverseGeocodeWeb(double lat, double lng) async {
 
 /// Converts coordinates to a single-line address (no lat/lng shown to users).
 Future<String?> reverseGeocode(double latitude, double longitude) async {
+  final key = _cacheKey(latitude, longitude);
+  final now = DateTime.now();
+  final cached = _reverseCache[key];
+  if (cached != null && cached.expiresAt.isAfter(now)) {
+    return cached.value;
+  }
+
+  final existing = _inflight[key];
+  if (existing != null) {
+    return existing;
+  }
+
   _log('reverseGeocode(lat=$latitude, lng=$longitude)');
   // Use backend reverse-geocode on all platforms to avoid plugin/runtime variance.
-  return _reverseGeocodeWeb(latitude, longitude);
+  final fut = _reverseGeocodeWeb(latitude, longitude);
+  _inflight[key] = fut;
+  try {
+    final v = await fut;
+    // Cache even null briefly to prevent tight retry loops when upstream rate-limits.
+    _reverseCache[key] = _CacheEntry(v, now.add(Duration(minutes: v == null ? 1 : 10)));
+    return v;
+  } finally {
+    _inflight.remove(key);
+  }
 }
