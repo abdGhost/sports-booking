@@ -144,6 +144,24 @@ def admin_reset_db(
     return {"deleted_events": deleted_events, "deleted_bookings": deleted_bookings}
 
 
+@app.post("/admin/reset_all")
+def admin_reset_all_db(
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """DANGEROUS: wipes bookings + events + users (full reset)."""
+    _require_admin_token(x_admin_token)
+    deleted_bookings = db.execute(text("DELETE FROM bookings")).rowcount or 0
+    deleted_events = db.execute(text("DELETE FROM sport_events")).rowcount or 0
+    deleted_users = db.execute(text("DELETE FROM users")).rowcount or 0
+    db.commit()
+    return {
+        "deleted_users": deleted_users,
+        "deleted_events": deleted_events,
+        "deleted_bookings": deleted_bookings,
+    }
+
+
 @app.post("/admin/seed")
 def admin_seed_db(
     payload: AdminSeedRequest,
