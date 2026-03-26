@@ -1949,6 +1949,62 @@ def list_event_bookings(event_id: int, db: Session = Depends(get_db)) -> list[Bo
     return [_booking_player_read(b, u) for b, u in rows]
 
 
+@app.post("/events/{event_id}/bookings/normalize-teams")
+def normalize_event_team_bookings(
+    event_id: int,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """Owner-only: merge same team_name rows under one shared team_id."""
+    ev = db.get(SportEvent, event_id)
+    if ev is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if current.role != UserRole.ORGANIZER or ev.organizer_id != current.id:
+        raise HTTPException(status_code=403, detail="Only the event organizer can normalize squads")
+    if (ev.registration_mode or "individual").strip().lower() != "team":
+        raise HTTPException(status_code=400, detail="This event is not team registration mode")
+
+    rows = db.scalars(
+        select(Booking)
+        .where(Booking.event_id == event_id)
+        .where(Booking.team_name.isnot(None))
+        .order_by(Booking.id.asc())
+    ).all()
+
+    canonical_by_name: dict[str, tuple[int, str]] = {}
+    max_tid = db.scalar(select(func.max(Booking.team_id)).where(Booking.event_id == event_id)) or 0
+    next_tid = int(max_tid) + 1
+    updated = 0
+
+    for b in rows:
+        raw = (b.team_name or "").strip()
+        if not raw:
+            continue
+        key = raw.lower()
+        if key not in canonical_by_name:
+            tid = b.team_id if b.team_id is not None else next_tid
+            if b.team_id is None:
+                b.team_id = tid
+                updated += 1
+                next_tid += 1
+            canonical_by_name[key] = (int(tid), raw)
+            continue
+
+        target_id, canonical_name = canonical_by_name[key]
+        if b.team_id != target_id:
+            b.team_id = target_id
+            updated += 1
+        if (b.team_name or "").strip() != canonical_name:
+            b.team_name = canonical_name
+            updated += 1
+
+    db.commit()
+    return {
+        "updated_bookings": updated,
+        "normalized_teams": len(canonical_by_name),
+    }
+
+
 @app.get("/events/{event_id}/bookings/me", response_model=BookingPlayerRead)
 def get_my_booking_for_event(
     event_id: int,
