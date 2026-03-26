@@ -9,7 +9,9 @@ from passlib.context import CryptContext
 # Avoid environment-specific bcrypt backend issues; PBKDF2 is stable and secure.
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
-SECRET_KEY = os.environ.get("JWT_SECRET", "dev-only-change-in-production")
+# Render / .env typically set SECRET_KEY; JWT_SECRET still supported if set.
+_raw_secret = (os.environ.get("JWT_SECRET") or os.environ.get("SECRET_KEY") or "").strip()
+SECRET_KEY = _raw_secret if _raw_secret else "dev-only-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 7
 
