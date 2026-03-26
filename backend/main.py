@@ -2019,10 +2019,23 @@ def create_my_booking(
             team_name = (ref.team_name or "").strip() or (payload.team_name or "").strip() or None
         elif payload.team_name and payload.team_name.strip():
             team_name = payload.team_name.strip()
-            max_tid = db.scalar(
-                select(func.max(Booking.team_id)).where(Booking.event_id == event_id)
+            # Reuse existing squad id when team_name already exists in this event
+            # so teammates are grouped under one team on the UI.
+            existing_team_id = db.scalar(
+                select(Booking.team_id)
+                .where(Booking.event_id == event_id)
+                .where(Booking.team_id.isnot(None))
+                .where(func.lower(func.trim(Booking.team_name)) == team_name.lower())
+                .order_by(Booking.id.asc())
+                .limit(1)
             )
-            team_id = (max_tid or 0) + 1
+            if existing_team_id is not None:
+                team_id = int(existing_team_id)
+            else:
+                max_tid = db.scalar(
+                    select(func.max(Booking.team_id)).where(Booking.event_id == event_id)
+                )
+                team_id = (max_tid or 0) + 1
         else:
             raise HTTPException(
                 status_code=400,

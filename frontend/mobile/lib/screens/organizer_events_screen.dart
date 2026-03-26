@@ -47,6 +47,10 @@ class _OrganizerEventsScreenState extends State<OrganizerEventsScreen> {
         loc.effectiveLat,
         loc.effectiveLng,
       );
+      if (mounted) {
+        // Signal parent screen to switch back to Home tab.
+        Navigator.of(context).pop(true);
+      }
     }
   }
 

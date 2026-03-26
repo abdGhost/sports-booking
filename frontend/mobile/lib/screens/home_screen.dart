@@ -238,7 +238,10 @@ class _HomeScreenState extends State<HomeScreen> {
           final userLong = loc.effectiveLng;
 
           if (_navIndex == 2) {
-            return _ProfileTab(auth: auth);
+            return _ProfileTab(
+              auth: auth,
+              onGoHome: () => setState(() => _navIndex = 0),
+            );
           }
 
           if (_navIndex == 1) {
@@ -968,9 +971,13 @@ class _FloatingSearchFieldState extends State<_FloatingSearchField> {
 }
 
 class _ProfileTab extends StatelessWidget {
-  const _ProfileTab({required this.auth});
+  const _ProfileTab({
+    required this.auth,
+    required this.onGoHome,
+  });
 
   final AuthProvider auth;
+  final VoidCallback onGoHome;
 
   static String _initials(String name) {
     final parts = name.trim().split(RegExp(r'\s+'));
@@ -1111,6 +1118,7 @@ class _ProfileTab extends StatelessWidget {
                                               loc.effectiveLat,
                                               loc.effectiveLng,
                                             );
+                                        if (context.mounted) onGoHome();
                                       }
                                     },
                                   ),
@@ -1118,7 +1126,7 @@ class _ProfileTab extends StatelessWidget {
                                     icon: Icons.dashboard_outlined,
                                     label: 'My events',
                                     showTopDivider: true,
-                                    onTap: () {
+                                    onTap: () async {
                                       final auth =
                                           context.read<AuthProvider>();
                                       if (auth.user == null ||
@@ -1133,12 +1141,18 @@ class _ProfileTab extends StatelessWidget {
                                         );
                                         return;
                                       }
-                                      Navigator.of(context).push<void>(
-                                        MaterialPageRoute<void>(
+                                      final backToHome = await Navigator.of(
+                                        context,
+                                      ).push<bool>(
+                                        MaterialPageRoute<bool>(
                                           builder: (_) =>
                                               const OrganizerEventsScreen(),
                                         ),
                                       );
+                                      if (context.mounted &&
+                                          backToHome == true) {
+                                        onGoHome();
+                                      }
                                     },
                                   ),
                                 ],
