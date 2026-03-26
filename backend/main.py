@@ -2,6 +2,8 @@
 
 import json
 import os
+import threading
+import time
 from typing import Annotated
 import urllib.error
 import urllib.parse
@@ -25,6 +27,29 @@ from models import Booking, EventStatus, SportEvent, User, UserRole
 from realistic_event_templates import REALISTIC_EVENT_BLUEPRINTS
 
 load_dotenv()
+
+# Nominatim usage policy: at most ~1 request/sec per project. Serialize + space calls.
+_nominatim_lock = threading.Lock()
+_last_nominatim_mono = 0.0
+_MIN_NOMINATIM_INTERVAL_SEC = 1.2
+
+
+def _throttle_nominatim() -> None:
+    global _last_nominatim_mono
+    with _nominatim_lock:
+        gap = time.monotonic() - _last_nominatim_mono
+        wait = _MIN_NOMINATIM_INTERVAL_SEC - gap
+        if wait > 0:
+            time.sleep(wait)
+        _last_nominatim_mono = time.monotonic()
+
+
+def _geocode_coordinate_fallback(lat: float, lon: float) -> dict[str, str]:
+    ns = "N" if lat >= 0 else "S"
+    ew = "E" if lon >= 0 else "W"
+    text = f"{abs(lat):.3f}°{ns}, {abs(lon):.3f}°{ew}"
+    return {"formatted_address": text, "display_name": text}
+
 
 from schemas import (
     BookingAddressUpdate,
@@ -1106,12 +1131,17 @@ def geocode_reverse(
     if cache is None:
         cache = {}
         app.state.geocode_cache = cache
+
+    stale: dict[str, str] | None = None
     hit = cache.get(key)
     if hit is not None:
         expires_at, payload = hit
         if expires_at > now:
             return payload
+        stale = payload
         cache.pop(key, None)
+
+    _throttle_nominatim()
 
     params = urllib.parse.urlencode(
         {
@@ -1127,24 +1157,38 @@ def geocode_reverse(
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "SportsBookingApp/1.0 (local dev; contact: n/a)",
+            "User-Agent": "SportsBookingApp/1.0 (+https://github.com/abdGhost/sports-booking)",
             "Accept-Language": "en",
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode())
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            if stale is not None:
+                cache[key] = (now + timedelta(minutes=15), stale)
+                return stale
+            fb = _geocode_coordinate_fallback(lat, lon)
+            cache[key] = (now + timedelta(minutes=60), fb)
+            return fb
         raise HTTPException(status_code=502, detail=f"Geocoding failed: {e}") from e
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        if stale is not None:
+            cache[key] = (now + timedelta(minutes=8), stale)
+            return stale
+        raise HTTPException(status_code=502, detail=f"Geocoding failed: {e}") from e
+
     formatted = _nominatim_best_formatted(body)
     display = body.get("display_name")
     if not formatted and not display:
-        raise HTTPException(status_code=404, detail="No address for location")
+        out = _geocode_coordinate_fallback(lat, lon)
+        cache[key] = (now + timedelta(minutes=120), out)
+        return out
     primary = formatted or str(display)
     out: dict[str, str] = {"formatted_address": primary}
     if display:
         out["display_name"] = str(display)
-    # Cache successes for 30 minutes, failures for 2 minutes.
     cache[key] = (now + timedelta(minutes=30), out)
     return out
 

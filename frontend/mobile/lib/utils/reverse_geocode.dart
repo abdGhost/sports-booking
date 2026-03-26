@@ -17,7 +17,7 @@ class _CacheEntry {
 }
 
 String _cacheKey(double lat, double lng) {
-  // Round to ~11m precision so small GPS jitter doesn't spam requests.
+  // Match backend `round(lat, 4)` so GPS jitter maps to one cache slot (~11 m).
   final rLat = (lat * 10000).round() / 10000;
   final rLng = (lng * 10000).round() / 10000;
   return '$rLat,$rLng';
@@ -75,8 +75,11 @@ Future<String?> reverseGeocode(double latitude, double longitude) async {
   _inflight[key] = fut;
   try {
     final v = await fut;
-    // Cache even null briefly to prevent tight retry loops when upstream rate-limits.
-    _reverseCache[key] = _CacheEntry(v, now.add(Duration(minutes: v == null ? 1 : 10)));
+    // Cache failures longer to avoid hammering Nominatim after 429 / 502 bursts.
+    _reverseCache[key] = _CacheEntry(
+      v,
+      now.add(Duration(minutes: v == null ? 5 : 30)),
+    );
     return v;
   } finally {
     _inflight.remove(key);

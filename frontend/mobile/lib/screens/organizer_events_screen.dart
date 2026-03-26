@@ -282,7 +282,7 @@ class _EmptyMyEventsState extends StatelessWidget {
             ),
             const SizedBox(height: 22),
             Text(
-              'No events yet',
+              'No events on this account',
               style: theme.textTheme.titleLarge?.copyWith(
                 fontWeight: FontWeight.w900,
                 color: SportsAppColors.accentBlue900,
@@ -290,7 +290,9 @@ class _EmptyMyEventsState extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             Text(
-              'Create a listing so players can find your match or tournament.',
+              'Only events you create while signed in here show up in My events. '
+              'If you used another email, sign in with that account—or create a new listing.\n\n'
+              'The Home tab lists nearby games from every organizer.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: SportsAppColors.textMuted,

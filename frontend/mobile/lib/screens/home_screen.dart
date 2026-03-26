@@ -63,6 +63,12 @@ class _HomeScreenState extends State<HomeScreen> {
   LocationProvider? _locProvider;
   late void Function() _onLocationChanged;
 
+  /// Avoid spamming `/events/nearby` when [LocationProvider] notifies many times
+  /// for the same fix (loading flags, address geocode, server sync, etc.).
+  static const double _minRefetchMoveKm = 0.08;
+  double? _lastNearbyFetchLat;
+  double? _lastNearbyFetchLng;
+
   static const _sportChips = <String>[
     'Soccer',
     'Basketball',
@@ -80,10 +86,22 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
       final loc = context.read<LocationProvider>();
-      context.read<EventProvider>().fetchNearbyEvents(
-        loc.effectiveLat,
-        loc.effectiveLng,
-      );
+      final lat = loc.effectiveLat;
+      final lng = loc.effectiveLng;
+      if (_lastNearbyFetchLat != null && _lastNearbyFetchLng != null) {
+        final moved = haversineDistanceKm(
+          lat,
+          lng,
+          _lastNearbyFetchLat!,
+          _lastNearbyFetchLng!,
+        );
+        if (moved < _minRefetchMoveKm) {
+          return;
+        }
+      }
+      _lastNearbyFetchLat = lat;
+      _lastNearbyFetchLng = lng;
+      context.read<EventProvider>().fetchNearbyEvents(lat, lng);
     };
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {

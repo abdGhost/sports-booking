@@ -166,6 +166,7 @@ REALISTIC_EVENT_BLUEPRINTS: list[dict[str, object]] = [
         "description": "ITF-style scoring. Balls and water included.",
         "registration_mode": "individual",
         "competition_format": "knockout",
+        "duration_minutes": 180,
         "max_slots": 32,
         "skill_level": "competitive",
         "price": 499.0,
