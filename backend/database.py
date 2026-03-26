@@ -18,10 +18,13 @@ load_dotenv()
 # Tests set DATABASE_URL=sqlite:///:memory: before importing `main`.
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./sports_booking.db")
 
-_engine_kwargs: dict = {"connect_args": {"check_same_thread": False}}
-# In-memory SQLite needs a single pooled connection or each session sees an empty DB.
-if "sqlite" in DATABASE_URL and ":memory:" in DATABASE_URL:
-    _engine_kwargs["poolclass"] = StaticPool
+_engine_kwargs: dict = {}
+# SQLite-only connect args; Postgres rejects `check_same_thread`.
+if DATABASE_URL.startswith("sqlite"):
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+    # In-memory SQLite needs a single pooled connection or each session sees an empty DB.
+    if ":memory:" in DATABASE_URL:
+        _engine_kwargs["poolclass"] = StaticPool
 
 engine = create_engine(DATABASE_URL, **_engine_kwargs)
 
