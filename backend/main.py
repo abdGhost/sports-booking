@@ -1356,10 +1356,10 @@ def geocode_reverse(
                 return stale
             alt = _reverse_bigdatacloud(lat, lon)
             if alt is not None:
-                cache[key] = (now + timedelta(minutes=60), alt)
+                cache[key] = (now + timedelta(minutes=20), alt)
                 return alt
             fb = _geocode_coordinate_fallback(lat, lon)
-            cache[key] = (now + timedelta(minutes=60), fb)
+            cache[key] = (now + timedelta(minutes=3), fb)
             return fb
         raise HTTPException(status_code=502, detail=f"Geocoding failed: {e}") from e
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
@@ -1372,7 +1372,7 @@ def geocode_reverse(
     display = body.get("display_name")
     if not formatted and not display:
         out = _geocode_coordinate_fallback(lat, lon)
-        cache[key] = (now + timedelta(minutes=120), out)
+        cache[key] = (now + timedelta(minutes=3), out)
         return out
     primary = formatted or str(display)
     out: dict[str, str] = {"formatted_address": primary}

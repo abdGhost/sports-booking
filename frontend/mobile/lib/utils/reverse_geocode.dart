@@ -27,6 +27,18 @@ String _cacheKey(double lat, double lng) {
 final Map<String, _CacheEntry> _reverseCache = <String, _CacheEntry>{};
 final Map<String, Future<String?>> _inflight = <String, Future<String?>>{};
 
+bool _looksCoordinateFallback(String? value) {
+  if (value == null) {
+    return false;
+  }
+  final s = value.trim();
+  if (s.isEmpty) {
+    return false;
+  }
+  final re = RegExp(r'^\d+(\.\d+)?°[NS],\s*\d+(\.\d+)?°[EW]$');
+  return re.hasMatch(s);
+}
+
 Future<String?> _reverseGeocodeWeb(double lat, double lng) async {
   try {
     final uri = Uri.parse('${ApiConfig.baseUrl}/geocode/reverse').replace(
@@ -42,7 +54,7 @@ Future<String?> _reverseGeocodeWeb(double lat, double lng) async {
       return null;
     }
     final map = jsonDecode(res.body) as Map<String, dynamic>;
-    final name = map['display_name'] as String?;
+    final name = (map['formatted_address'] ?? map['display_name']) as String?;
     if (name == null || name.trim().isEmpty) {
       _log('FAIL: empty display_name');
       return null;
@@ -122,10 +134,13 @@ Future<String?> reverseGeocode(double latitude, double longitude) async {
   _inflight[key] = fut;
   try {
     final v = await fut;
-    // Cache failures longer to avoid hammering Nominatim after 429 / 502 bursts.
+    // Coordinate fallback labels should expire quickly so a real address replaces them.
+    final ttlMinutes = v == null
+        ? 5
+        : (_looksCoordinateFallback(v) ? 1 : 30);
     _reverseCache[key] = _CacheEntry(
       v,
-      now.add(Duration(minutes: v == null ? 5 : 30)),
+      now.add(Duration(minutes: ttlMinutes)),
     );
     return v;
   } finally {
