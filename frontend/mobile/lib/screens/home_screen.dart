@@ -327,7 +327,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               imagePath: _imageForSport(e.sportType),
                               title: e.title,
                               subtitle:
-                                  '${e.venueName} · ${dist.toStringAsFixed(1)} km · $slots',
+                                  '${e.venueName}\n${dist.toStringAsFixed(1)} km · $slots',
                               sportLabel: e.sportType,
                               sportIcon: _iconForSport(e.sportType),
                               onTap: () {
@@ -2500,6 +2500,7 @@ class _EventListTileCard extends StatelessWidget {
     final timeStr = DateFormat(
       'MMM d · h:mm a',
     ).format(event.startTime.toLocal());
+    final isTeam = event.registrationMode.toLowerCase() == 'team';
 
     return GestureDetector(
       onTap: onTap,
@@ -2630,6 +2631,30 @@ class _EventListTileCard extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
+                    if (isTeam) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.groups_rounded,
+                            size: 15,
+                            color: Colors.black,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              'Team Registration',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: Colors.black,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                     const SizedBox(height: 8),
                     Row(
                       children: [

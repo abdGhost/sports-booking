@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:geocoding/geocoding.dart';
 import 'package:http/http.dart' as http;
 
 import '../config/api_config.dart';
@@ -55,6 +56,44 @@ Future<String?> _reverseGeocodeWeb(double lat, double lng) async {
   }
 }
 
+String? _compactAddressFromPlacemark(Placemark p) {
+  final parts = <String>[];
+  for (final v in [
+    p.street,
+    p.subLocality,
+    p.locality,
+    p.administrativeArea,
+    p.country,
+  ]) {
+    final t = v?.trim();
+    if (t != null && t.isNotEmpty && !parts.contains(t)) {
+      parts.add(t);
+    }
+  }
+  if (parts.isEmpty) {
+    return null;
+  }
+  return parts.join(', ');
+}
+
+Future<String?> _reverseGeocodeDevice(double lat, double lng) async {
+  try {
+    final list = await placemarkFromCoordinates(lat, lng);
+    if (list.isEmpty) {
+      return null;
+    }
+    final text = _compactAddressFromPlacemark(list.first);
+    if (text == null || text.isEmpty) {
+      return null;
+    }
+    _log('OK (device): $text');
+    return text;
+  } catch (e) {
+    _log('device geocode failed: $e');
+    return null;
+  }
+}
+
 /// Converts coordinates to a single-line address (no lat/lng shown to users).
 Future<String?> reverseGeocode(double latitude, double longitude) async {
   final key = _cacheKey(latitude, longitude);
@@ -70,8 +109,16 @@ Future<String?> reverseGeocode(double latitude, double longitude) async {
   }
 
   _log('reverseGeocode(lat=$latitude, lng=$longitude)');
-  // Use backend reverse-geocode on all platforms to avoid plugin/runtime variance.
-  final fut = _reverseGeocodeWeb(latitude, longitude);
+  // Frontend package first on native platforms; backend fallback (also used on web).
+  final fut = () async {
+    if (!kIsWeb) {
+      final local = await _reverseGeocodeDevice(latitude, longitude);
+      if (local != null && local.isNotEmpty) {
+        return local;
+      }
+    }
+    return _reverseGeocodeWeb(latitude, longitude);
+  }();
   _inflight[key] = fut;
   try {
     final v = await fut;

@@ -44,6 +44,7 @@ dependencies:
   flutter_svg: ^2.0.10+1
   flutter_stripe: ^12.4.0
   flutter_native_splash: ^2.4.7
+  geocoding: ^4.0.0
 
 dev_dependencies:
   flutter_test:

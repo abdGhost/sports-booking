@@ -52,6 +52,48 @@ def _geocode_coordinate_fallback(lat: float, lon: float) -> dict[str, str]:
     return {"formatted_address": text, "display_name": text}
 
 
+def _reverse_bigdatacloud(lat: float, lon: float) -> dict[str, str] | None:
+    """Best-effort free fallback when Nominatim is rate-limited."""
+    params = urllib.parse.urlencode(
+        {
+            "latitude": lat,
+            "longitude": lon,
+            "localityLanguage": "en",
+        }
+    )
+    url = f"https://api.bigdatacloud.net/data/reverse-geocode-client?{params}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "SportsBookingApp/1.0 (+https://github.com/abdGhost/sports-booking)",
+            "Accept-Language": "en",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            body = json.loads(resp.read().decode())
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError):
+        return None
+
+    # Build a human-readable line from most stable fields.
+    parts = []
+    for k in (
+        "locality",
+        "city",
+        "principalSubdivision",
+        "countryName",
+    ):
+        v = body.get(k)
+        if isinstance(v, str) and v.strip():
+            s = v.strip()
+            if s not in parts:
+                parts.append(s)
+    if not parts:
+        return None
+    text = ", ".join(parts)
+    return {"formatted_address": text, "display_name": text}
+
+
 from schemas import (
     BookingAddressUpdate,
     BookingCreatePlayer,
@@ -1312,6 +1354,10 @@ def geocode_reverse(
             if stale is not None:
                 cache[key] = (now + timedelta(minutes=15), stale)
                 return stale
+            alt = _reverse_bigdatacloud(lat, lon)
+            if alt is not None:
+                cache[key] = (now + timedelta(minutes=60), alt)
+                return alt
             fb = _geocode_coordinate_fallback(lat, lon)
             cache[key] = (now + timedelta(minutes=60), fb)
             return fb
