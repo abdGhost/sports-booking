@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/sport_event.dart';
 import '../providers/auth_provider.dart';
 import '../providers/event_provider.dart';
+import '../providers/location_provider.dart';
 import '../theme/sports_app_theme.dart';
 import 'create_event_screen.dart';
 import 'event_detail_screen.dart';
@@ -37,6 +38,15 @@ class _OrganizerEventsScreenState extends State<OrganizerEventsScreen> {
     );
     if (created == true && mounted) {
       await _load();
+      // Keep Home feed fresh too: new event should appear in nearby cards.
+      if (!mounted) {
+        return;
+      }
+      final loc = context.read<LocationProvider>();
+      await context.read<EventProvider>().fetchNearbyEvents(
+        loc.effectiveLat,
+        loc.effectiveLng,
+      );
     }
   }
 
