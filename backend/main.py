@@ -24,6 +24,7 @@ from auth_utils import create_access_token, decode_access_token, hash_password, 
 from database import SessionLocal, get_db, init_db
 from haversine import haversine_km
 from models import Booking, EventStatus, SportEvent, User, UserRole
+from global_seed_data import global_catalog_event_count, global_listing_blueprints
 from realistic_event_templates import REALISTIC_EVENT_BLUEPRINTS
 
 load_dotenv()
@@ -91,6 +92,14 @@ async def lifespan(app: FastAPI):
         _seed_demo_knockout_schedule()
         _seed_weekend_football_league()
         _seed_sunset_football_7v7_squads()
+    if os.environ.get("SEED_GLOBAL_CATALOG_IF_EMPTY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    ):
+        _seed_global_catalog_if_empty()
     yield
 
 
@@ -158,6 +167,101 @@ class AdminSeedRequest(BaseModel):
     events: int = Field(default=20, ge=1, le=300)
     #: When True, generate names/venues from curated list (default). False = legacy generic titles.
     realistic: bool = Field(default=True)
+
+
+class AdminSeedGlobalRequest(BaseModel):
+    """Seed realistic listings spread across many cities (see `global_seed_data.py`)."""
+
+    organizer_email: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Organizer account that owns all rows. First organizer if omitted.",
+    )
+    only_if_empty: bool = Field(
+        default=False,
+        description="When true, no-op if sport_events already has any row.",
+    )
+
+
+def _insert_global_catalog_rows(db: Session, organizer_id: int) -> int:
+    import random
+
+    rows = global_listing_blueprints()
+    now = datetime.now(timezone.utc)
+    rng = random.Random(90817)
+    made = 0
+    for i, row in enumerate(rows):
+        hint = str(row.get("status_hint", "open"))
+        max_slots = int(row["max_slots"])
+        if hint == "full":
+            status_v = EventStatus.FULL.value
+            booked = max_slots
+        elif hint == "live":
+            status_v = EventStatus.LIVE.value
+            booked = min(max_slots, max(1, int(max_slots * 0.88)))
+        else:
+            status_v = EventStatus.OPEN.value
+            cap = max(0, max_slots - 1)
+            booked = rng.randint(0, max(0, min(cap, max_slots // 2 + 3)))
+        start_time = now + timedelta(
+            days=3 + (i % 28),
+            hours=8 + (i % 10),
+            minutes=(i * 13) % 55,
+        )
+        reg_start = now - timedelta(hours=1)
+        reg_end = start_time - timedelta(hours=2)
+        if reg_end <= now:
+            reg_end = now + timedelta(hours=4)
+        ev = SportEvent(
+            organizer_id=organizer_id,
+            title=str(row["title"]),
+            sport_type=str(row["sport_type"]),
+            venue_name=str(row["venue_name"]),
+            description=str(row["description"]),
+            duration_minutes=int(row["duration_minutes"]),
+            skill_level=str(row["skill_level"]) if row.get("skill_level") else None,
+            contact_phone=None,
+            lat=float(row["lat"]),
+            long=float(row["lon"]),
+            price=float(row["price"]),
+            max_slots=max_slots,
+            booked_slots=booked,
+            start_time=start_time,
+            registration_start=reg_start,
+            registration_end=reg_end,
+            status=status_v,
+            registration_mode=str(row["registration_mode"]),
+            competition_format=str(row["competition_format"]),
+            age_group=str(row.get("age_group", "Open")),
+        )
+        db.add(ev)
+        made += 1
+    return made
+
+
+def _seed_global_catalog_if_empty() -> None:
+    db = SessionLocal()
+    try:
+        n_ev = db.scalar(select(func.count()).select_from(SportEvent)) or 0
+        if n_ev > 0:
+            return
+        email = os.environ.get("GLOBAL_SEED_ORGANIZER_EMAIL", "organizer@sportsbooking.app").strip()
+        org = db.scalars(
+            select(User).where(User.email == email, User.role == UserRole.ORGANIZER)
+        ).first()
+        if org is None:
+            org = db.scalars(
+                select(User).where(User.role == UserRole.ORGANIZER).order_by(User.id)
+            ).first()
+        if org is None:
+            return
+        _insert_global_catalog_rows(db, org.id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @app.post("/admin/reset")
@@ -308,6 +412,45 @@ def admin_seed_db(
         made += 1
     db.commit()
     return {"created_events": made}
+
+
+@app.post("/admin/seed_global")
+def admin_seed_global_db(
+    payload: AdminSeedGlobalRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Create worldwide realistic listings (one organizer owns all rows)."""
+    _require_admin_token(x_admin_token)
+    if payload.only_if_empty:
+        n_ev = db.scalar(select(func.count()).select_from(SportEvent)) or 0
+        if n_ev > 0:
+            return {
+                "created_events": 0,
+                "skipped": True,
+                "catalog_size": global_catalog_event_count(),
+            }
+    org: User | None = None
+    if payload.organizer_email:
+        em = payload.organizer_email.strip()
+        org = db.scalars(select(User).where(User.email == em)).first()
+        if org is None or org.role != UserRole.ORGANIZER:
+            raise HTTPException(
+                status_code=400,
+                detail="organizer_email must match an existing organizer account",
+            )
+    if org is None:
+        org = db.scalars(
+            select(User).where(User.role == UserRole.ORGANIZER).order_by(User.id)
+        ).first()
+    if org is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No organizer user exists; register an organizer first.",
+        )
+    made = _insert_global_catalog_rows(db, org.id)
+    db.commit()
+    return {"created_events": made, "skipped": False, "organizer_id": org.id}
 
 
 def _seed_demo_users_if_empty() -> None:

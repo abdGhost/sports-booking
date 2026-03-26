@@ -19,5 +19,9 @@ services:
         sync: false
       - key: ENABLE_DEMO_SEEDS
         sync: false
+      - key: SEED_GLOBAL_CATALOG_IF_EMPTY
+        sync: false
+      - key: GLOBAL_SEED_ORGANIZER_EMAIL
+        sync: false
       - key: ADMIN_RESET_TOKEN
         sync: false
