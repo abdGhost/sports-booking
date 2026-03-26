@@ -27,6 +27,7 @@ class EventProvider extends ChangeNotifier {
       {double radiusKm = 50}) async {
     isLoading = true;
     errorMessage = null;
+    _events.clear();
     notifyListeners();
 
     final uri = Uri.parse('${ApiConfig.baseUrl}/events/nearby').replace(

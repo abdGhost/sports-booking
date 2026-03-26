@@ -22,6 +22,8 @@ from auth_utils import create_access_token, decode_access_token, hash_password, 
 from database import SessionLocal, get_db, init_db
 from haversine import haversine_km
 from models import Booking, EventStatus, SportEvent, User, UserRole
+from realistic_event_templates import REALISTIC_EVENT_BLUEPRINTS
+
 load_dotenv()
 
 from schemas import (
@@ -129,6 +131,8 @@ class AdminSeedRequest(BaseModel):
     center_long: float = Field(..., ge=-180, le=180)
     radius_km: float = Field(default=25.0, gt=0, le=5000)
     events: int = Field(default=20, ge=1, le=300)
+    #: When True, generate names/venues from curated list (default). False = legacy generic titles.
+    realistic: bool = Field(default=True)
 
 
 @app.post("/admin/reset")
@@ -184,38 +188,96 @@ def admin_seed_db(
         ("Badminton", "individual"),
         ("Tennis", "individual"),
     ]
+    blueprints = REALISTIC_EVENT_BLUEPRINTS
+    n_bp = len(blueprints)
 
     now = datetime.now(timezone.utc)
     made = 0
     for i in range(payload.events):
-        sport, mode = sports[i % len(sports)]
-        # crude random point around center (approx km -> deg)
         dlat = (random.uniform(-1, 1) * payload.radius_km) / 110.574
-        dlon = (random.uniform(-1, 1) * payload.radius_km) / (111.320 * max(0.2, abs(payload.center_lat)))
+        dlon = (random.uniform(-1, 1) * payload.radius_km) / (
+            111.320 * max(0.2, abs(payload.center_lat))
+        )
         lat = float(max(-90, min(90, payload.center_lat + dlat)))
         lon = float(max(-180, min(180, payload.center_long + dlon)))
 
-        reg_start = now - timedelta(hours=1)
-        reg_end = now + timedelta(days=3)
-        start_time = now + timedelta(days=5 + (i % 7), hours=2)
+        if payload.realistic:
+            bp = blueprints[i % n_bp]
+            title = str(bp["title"])
+            batch = i // n_bp
+            if batch > 0:
+                title = f"{title} · Part {batch + 1}"
+            sport_type = str(bp["sport_type"])
+            venue_name = str(bp["venue_name"])
+            description = str(bp["description"])
+            registration_mode = str(bp["registration_mode"])
+            competition_format = str(bp["competition_format"])
+            duration_minutes = int(bp["duration_minutes"])
+            max_slots = int(bp["max_slots"])
+            sk = bp.get("skill_level")
+            skill_level = str(sk) if sk else None
+            price = float(bp["price"])
+            age_group = str(bp.get("age_group", "Open"))
+            hint = str(bp.get("status_hint", "open"))
+            if hint == "full":
+                status_v = EventStatus.FULL.value
+                booked_slots = max_slots
+            elif hint == "live":
+                status_v = EventStatus.LIVE.value
+                booked_slots = min(max_slots, max(1, int(max_slots * 0.88)))
+            else:
+                status_v = EventStatus.OPEN.value
+                cap = max(0, max_slots - 1)
+                booked_slots = random.randint(0, max(0, min(cap, max_slots // 2 + 4)))
+            contact_phone = (
+                f"+91-3842-250{i % 10}0" if (i % 3 == 0) else None
+            )
+        else:
+            sport_type, registration_mode = sports[i % len(sports)]
+            title = f"{sport_type} Test Event {i + 1}"
+            venue_name = f"Test Venue {i + 1}"
+            description = "Seeded event for live testing."
+            competition_format = "knockout" if registration_mode == "team" else "league"
+            duration_minutes = 90 if sport_type != "Cricket" else 120
+            max_slots = 16 if registration_mode == "team" else 20
+            skill_level = None
+            price = float(random.choice([0, 99, 149, 199, 249, 299]))
+            age_group = "Open"
+            status_v = EventStatus.OPEN.value
+            booked_slots = 0
+            contact_phone = None
+
+        start_time = now + timedelta(
+            days=2 + (i % 24),
+            hours=10 + (i % 8),
+            minutes=(i * 11) % 55,
+        )
+        reg_start = now - timedelta(hours=2)
+        reg_end = start_time - timedelta(hours=1)
+        if reg_end <= now:
+            reg_end = now + timedelta(hours=6)
+
         ev = SportEvent(
             organizer_id=org.id,
-            title=f"{sport} Test Event {i+1}",
-            sport_type=sport,
-            venue_name=f"Test Venue {i+1}",
-            description="Seeded event for live testing.",
-            duration_minutes=90 if sport != "Cricket" else 120,
+            title=title,
+            sport_type=sport_type,
+            venue_name=venue_name,
+            description=description,
+            duration_minutes=duration_minutes,
+            skill_level=skill_level,
+            contact_phone=contact_phone,
             lat=lat,
             long=lon,
-            price=float(random.choice([0, 99, 149, 199, 249, 299])),
-            max_slots=16 if mode == "team" else 20,
+            price=price,
+            max_slots=max_slots,
+            booked_slots=booked_slots,
             start_time=start_time,
             registration_start=reg_start,
             registration_end=reg_end,
-            status=EventStatus.OPEN.value,
-            registration_mode=mode,
-            competition_format="knockout" if mode == "team" else "league",
-            age_group="Open",
+            status=status_v,
+            registration_mode=registration_mode,
+            competition_format=competition_format,
+            age_group=age_group,
         )
         db.add(ev)
         made += 1

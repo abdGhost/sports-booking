@@ -4,19 +4,24 @@ import 'local_dev_api.dart';
 
 /// Base URL for the FastAPI server.
 ///
-/// **Physical device:** set [localDevPcHost] in `lib/config/local_dev_api.dart`, then
-/// run `flutter run` with no flags.
+/// **Default:** production API on Render ([_defaultProdBase]) for every platform
+/// and mode — no `--dart-define` needed for normal run/release builds.
 ///
-/// **Android emulator:** leave `localDevPcHost` null — uses `10.0.2.2` (API must
-/// listen on `0.0.0.0`).
+/// **Local backend:** use one of:
+/// - `--dart-define=API_BASE=http://10.0.2.2:8100` (Android emulator)
+/// - `--dart-define=API_BASE=http://127.0.0.1:8100` (iOS simulator / desktop / web)
+/// - `--dart-define=API_HOST=192.168.x.x` with optional `API_PORT`
+/// - Set [localDevPcHost] in `lib/config/local_dev_api.dart` for a **physical phone**
+///   on the same Wi‑Fi (points at your PC).
 ///
-/// **Overrides:** `--dart-define=API_BASE=...`, then `API_HOST` / `API_PORT`.
-///
-/// **Flutter Web:** uses `127.0.0.1`; `10.0.2.2` in `API_BASE` is rewritten for web.
+/// **Flutter Web:** `10.0.2.2` in `API_BASE` is rewritten for the browser; production
+/// HTTPS URL is unchanged.
 class ApiConfig {
   ApiConfig._();
 
   static const String _fromEnv = String.fromEnvironment('API_BASE');
+  static const String _defaultProdBase =
+      'https://sports-booking-32gk.onrender.com';
   /// PC LAN IP or hostname, without scheme (e.g. `192.168.1.10`). Used on mobile when set.
   static const String _hostFromEnv = String.fromEnvironment('API_HOST');
   static const String _portFromEnv = String.fromEnvironment('API_PORT');
@@ -66,17 +71,10 @@ class ApiConfig {
         return 'http://$local:$_effectivePort';
       }
     }
-    // Flutter web is usually served at http://localhost:<port>. Use the same host
-    // for the API so the browser does not treat 127.0.0.1 as a different origin
-    // (PUT + Authorization preflight can otherwise fail silently).
+    final prod = _defaultProdBase;
     if (kIsWeb) {
-      return 'http://localhost:$_effectivePort';
+      return _sanitizeForWeb(prod);
     }
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.android:
-        return 'http://10.0.2.2:$_effectivePort';
-      default:
-        return 'http://127.0.0.1:$_effectivePort';
-    }
+    return prod;
   }
 }

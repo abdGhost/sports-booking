@@ -72,27 +72,6 @@ class _HomeScreenState extends State<HomeScreen> {
     'Hockey',
   ];
 
-  static const _featuredCards = <(String, String, String, String)>[
-    (
-      'assets/images/feature_soccer.jpg',
-      'Weekend Football League',
-      'Open slots · Prime turf',
-      'Soccer',
-    ),
-    (
-      'assets/images/feature_basketball.jpg',
-      'City Court Showdown',
-      'Night event · 5v5 teams',
-      'Basketball',
-    ),
-    (
-      'assets/images/feature_tennis.jpg',
-      'Sunset Tennis Rally',
-      'Coaching session available',
-      'Tennis',
-    ),
-  ];
-
   @override
   void initState() {
     super.initState();
@@ -311,38 +290,42 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   if (live != null)
                     const SliverToBoxAdapter(child: SizedBox(height: 20)),
-                  SliverToBoxAdapter(
-                    child: SizedBox(
-                      height: 168,
-                      child: ListView.separated(
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        scrollDirection: Axis.horizontal,
-                        itemCount: _featuredCards.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 14),
-                        itemBuilder: (context, i) {
-                          final item = _featuredCards[i];
-                          return _FeaturedImageCard(
-                            imagePath: item.$1,
-                            title: item.$2,
-                            subtitle: item.$3,
-                            sportLabel: item.$4,
-                            sportIcon: _iconForSport(item.$4),
-                            onTap: () {
-                              if (items.isNotEmpty) {
-                                final event = items[i % items.length];
+                  if (items.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: SizedBox(
+                        height: 168,
+                        child: ListView.separated(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          scrollDirection: Axis.horizontal,
+                          itemCount: items.length < 3 ? items.length : 3,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(width: 14),
+                          itemBuilder: (context, i) {
+                            final e = items[i];
+                            final dist = _distanceKm(e, userLat, userLong);
+                            final slots =
+                                '${e.bookedSlots}/${e.maxSlots} booked';
+                            return _FeaturedImageCard(
+                              imagePath: _imageForSport(e.sportType),
+                              title: e.title,
+                              subtitle:
+                                  '${e.venueName} · ${dist.toStringAsFixed(1)} km · $slots',
+                              sportLabel: e.sportType,
+                              sportIcon: _iconForSport(e.sportType),
+                              onTap: () {
                                 Navigator.of(context).push(
                                   MaterialPageRoute<void>(
-                                    builder: (_) => EventDetailScreen(event: event),
+                                    builder: (_) => EventDetailScreen(event: e),
                                   ),
                                 );
-                              }
-                            },
-                          );
-                        },
+                              },
+                            );
+                          },
+                        ),
                       ),
                     ),
-                  ),
-                  const SliverToBoxAdapter(child: SizedBox(height: 26)),
+                  if (items.isNotEmpty)
+                    const SliverToBoxAdapter(child: SizedBox(height: 26)),
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 20),
