@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../config/api_config.dart';
+import '../utils/organizer_booking_seen_store.dart';
 import '../models/booking_player.dart';
 import '../models/team_roster_member.dart';
 import '../models/organizer_matchup.dart';
@@ -1060,11 +1061,16 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
       }
       final list = jsonDecode(res.body) as List<dynamic>;
       if (mounted) {
+        final players = list
+            .map((e) => BookingPlayer.fromJson(e as Map<String, dynamic>))
+            .toList();
         setState(() {
-          _players = list
-              .map((e) => BookingPlayer.fromJson(e as Map<String, dynamic>))
-              .toList();
+          _players = players;
         });
+        await OrganizerBookingSeenStore.instance.acknowledgeBookings(
+          widget.eventId,
+          players.map((p) => p.bookingId).toSet(),
+        );
       }
     } catch (e) {
       if (mounted) {

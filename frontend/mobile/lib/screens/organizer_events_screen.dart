@@ -1,12 +1,17 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../config/api_config.dart';
 import '../models/sport_event.dart';
 import '../providers/auth_provider.dart';
 import '../providers/event_provider.dart';
 import '../providers/location_provider.dart';
 import '../theme/sports_app_theme.dart';
+import '../utils/organizer_booking_seen_store.dart';
 import 'create_event_screen.dart';
 import 'event_detail_screen.dart';
 
@@ -19,6 +24,9 @@ class OrganizerEventsScreen extends StatefulWidget {
 }
 
 class _OrganizerEventsScreenState extends State<OrganizerEventsScreen> {
+  /// Event id -> count of bookings not yet opened on the organizer roster screen.
+  Map<int, int> _newRegistrationCountByEvent = {};
+
   @override
   void initState() {
     super.initState();
@@ -27,7 +35,61 @@ class _OrganizerEventsScreenState extends State<OrganizerEventsScreen> {
 
   Future<void> _load() async {
     final auth = context.read<AuthProvider>();
-    await context.read<EventProvider>().fetchMyEvents(auth.authHeaders());
+    final evp = context.read<EventProvider>();
+    await evp.fetchMyEvents(auth.authHeaders());
+    if (!mounted) {
+      return;
+    }
+    await _refreshNewRegistrationBadges(evp.myEvents);
+  }
+
+  Future<void> _refreshNewRegistrationBadges(List<SportEvent> events) async {
+    if (events.isEmpty) {
+      if (mounted) {
+        setState(() => _newRegistrationCountByEvent = {});
+      }
+      return;
+    }
+    final auth = context.read<AuthProvider>();
+    final headers = auth.authHeaders();
+    final store = OrganizerBookingSeenStore.instance;
+    final next = <int, int>{};
+    await Future.wait(
+      events.map((e) async {
+        try {
+          final uri =
+              Uri.parse('${ApiConfig.baseUrl}/events/${e.id}/bookings');
+          final res = await http.get(uri, headers: headers);
+          if (res.statusCode != 200) {
+            return;
+          }
+          final body = jsonDecode(res.body);
+          if (body is! List<dynamic>) {
+            return;
+          }
+          final ids = <int>{};
+          for (final row in body) {
+            if (row is! Map<String, dynamic>) {
+              continue;
+            }
+            final id = row['booking_id'];
+            if (id is int) {
+              ids.add(id);
+            } else if (id is num) {
+              ids.add(id.toInt());
+            }
+          }
+          final ack = await store.loadAcknowledged(e.id);
+          final unseen = ids.difference(ack).length;
+          if (unseen > 0) {
+            next[e.id] = unseen;
+          }
+        } catch (_) {}
+      }),
+    );
+    if (mounted) {
+      setState(() => _newRegistrationCountByEvent = next);
+    }
   }
 
   Future<void> _openCreate() async {
@@ -243,6 +305,8 @@ class _OrganizerEventsScreenState extends State<OrganizerEventsScreen> {
                               event: e,
                               sportIcon: _iconForSport(e.sportType),
                               badge: _statusBadge(e.status),
+                              newRegistrationCount:
+                                  _newRegistrationCountByEvent[e.id] ?? 0,
                               onTap: () async {
                                 await Navigator.of(context).push<void>(
                                   MaterialPageRoute<void>(
@@ -328,12 +392,15 @@ class _MyEventRow extends StatelessWidget {
     required this.sportIcon,
     required this.badge,
     required this.onTap,
+    this.newRegistrationCount = 0,
   });
 
   final SportEvent event;
   final IconData sportIcon;
   final (String, Color) badge;
   final VoidCallback onTap;
+  /// Bookings not yet viewed on the organizer roster for this event.
+  final int newRegistrationCount;
 
   @override
   Widget build(BuildContext context) {
@@ -426,6 +493,48 @@ class _MyEventRow extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
+                    if (newRegistrationCount > 0) ...[
+                      const SizedBox(height: 8),
+                      Tooltip(
+                        message: '$newRegistrationCount new '
+                            '${newRegistrationCount == 1 ? 'registration' : 'registrations'} '
+                            'since you last opened the roster',
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: SportsAppColors.liveRed.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: SportsAppColors.liveRed.withValues(alpha: 0.45),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.mark_email_unread_outlined,
+                                size: 14,
+                                color: SportsAppColors.liveRed,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                newRegistrationCount == 1
+                                    ? 'New registration'
+                                    : '$newRegistrationCount new registrations',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: SportsAppColors.liveRed,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 0.15,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
