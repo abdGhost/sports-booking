@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class EventCreate(BaseModel):
@@ -105,6 +105,14 @@ class EventUpdateStatus(BaseModel):
     status: int = Field(..., ge=0, le=4)
 
 
+class TeamRosterMemberRead(BaseModel):
+    """Name/email the captain entered for a teammate (stored on the event)."""
+
+    name: str
+    email: str | None = None
+    is_captain: bool = False
+
+
 class BookingPlayerRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -116,6 +124,8 @@ class BookingPlayerRead(BaseModel):
     team_id: int | None
     team_name: str | None = None
     address: str | None = None
+    #: Full declared roster for this squad (captain + teammates), when the captain registered the team.
+    team_roster: list[TeamRosterMemberRead] | None = None
     #: Present only on create when card + paid amount; use with Stripe Payment Sheet.
     payment_client_secret: str | None = None
     stripe_publishable_key: str | None = None
@@ -132,11 +142,27 @@ class MyBookingRead(BaseModel):
     event: EventRead
 
 
+class TeamMemberCreate(BaseModel):
+    """Optional teammate row submitted by the captain (Start a team flow only)."""
+
+    name: str = Field(..., min_length=1, max_length=120)
+    email: EmailStr | None = None
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def empty_email_is_none(cls, v: Any) -> Any:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
+
 class BookingCreatePlayer(BaseModel):
     """Book the current user onto an event (squad-based when registration_mode is team)."""
 
     team_name: str | None = Field(default=None, max_length=120)
     join_team_id: int | None = Field(default=None, ge=1)
+    #: Captain declares other players (no login); only used when starting a new team, not when join_team_id is set.
+    team_members: list[TeamMemberCreate] | None = Field(default=None, max_length=24)
     #: `free` completes immediately as paid (demo). `card` uses Stripe when price > 0.
     payment_method: Literal["free", "card"] = "free"
 

@@ -111,6 +111,8 @@ from schemas import (
     ScheduledMatchPatch,
     MyBookingRead,
     RegisterRequest,
+    TeamMemberCreate,
+    TeamRosterMemberRead,
     TokenResponse,
     UserLocationUpdate,
     UserPublic,
@@ -1914,13 +1916,85 @@ def _inr_amount_paise(price: float) -> int:
     return max(50, int(round(price * 100)))
 
 
+def _team_roster_from_extra(
+    extra: dict | None, team_id: int | None
+) -> list[TeamRosterMemberRead] | None:
+    if team_id is None or not extra:
+        return None
+    raw = extra.get("team_rosters")
+    if not isinstance(raw, dict):
+        return None
+    block = raw.get(str(int(team_id)))
+    if not isinstance(block, list) or not block:
+        return None
+    out: list[TeamRosterMemberRead] = []
+    for item in block:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        email_raw = item.get("email")
+        em = str(email_raw).strip() if email_raw else None
+        if em == "":
+            em = None
+        out.append(
+            TeamRosterMemberRead(
+                name=name[:120],
+                email=em,
+                is_captain=bool(item.get("is_captain")),
+            )
+        )
+    return out or None
+
+
+def _persist_team_roster(
+    ev: SportEvent,
+    team_id: int,
+    captain: User,
+    members: list[TeamMemberCreate] | None,
+) -> None:
+    """Store captain + declared teammates on the event (first booking for this team_id only)."""
+    entry: list[dict[str, str | bool | None]] = [
+        {
+            "name": captain.name.strip()[:120],
+            "email": (captain.email or "").strip()[:120] or None,
+            "is_captain": True,
+        }
+    ]
+    seen: set[str] = {captain.name.strip().lower()}
+    for m in members or []:
+        nm = m.name.strip()
+        if not nm:
+            continue
+        low = nm.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        em_val = m.email
+        em_s = str(em_val).strip()[:120] if em_val is not None else None
+        if em_s == "":
+            em_s = None
+        entry.append({"name": nm[:120], "email": em_s, "is_captain": False})
+    cfg = dict(ev.extra_config or {})
+    prev = cfg.get("team_rosters")
+    rosters = dict(prev) if isinstance(prev, dict) else {}
+    rosters[str(int(team_id))] = entry
+    cfg["team_rosters"] = rosters
+    ev.extra_config = cfg
+    flag_modified(ev, "extra_config")
+
+
 def _booking_player_read(
     b: Booking,
     u: User,
+    db: Session,
     *,
     payment_client_secret: str | None = None,
     stripe_publishable_key: str | None = None,
 ) -> BookingPlayerRead:
+    ev = db.get(SportEvent, b.event_id)
+    roster = _team_roster_from_extra(ev.extra_config if ev else None, b.team_id)
     return BookingPlayerRead(
         booking_id=b.id,
         user_id=u.id,
@@ -1930,6 +2004,7 @@ def _booking_player_read(
         team_id=b.team_id,
         team_name=b.team_name,
         address=b.checkin_address,
+        team_roster=roster,
         payment_client_secret=payment_client_secret,
         stripe_publishable_key=stripe_publishable_key,
     )
@@ -1946,7 +2021,7 @@ def list_event_bookings(event_id: int, db: Session = Depends(get_db)) -> list[Bo
         .where(Booking.event_id == event_id)
     )
     rows = db.execute(stmt).all()
-    return [_booking_player_read(b, u) for b, u in rows]
+    return [_booking_player_read(b, u, db) for b, u in rows]
 
 
 @app.post("/events/{event_id}/bookings/normalize-teams")
@@ -2025,7 +2100,7 @@ def get_my_booking_for_event(
     u = db.get(User, b.user_id)
     if u is None:
         raise HTTPException(status_code=500, detail="User missing for booking")
-    return _booking_player_read(b, u)
+    return _booking_player_read(b, u, db)
 
 
 @app.post("/events/{event_id}/bookings/me", response_model=BookingPlayerRead)
@@ -2135,6 +2210,16 @@ def create_my_booking(
         ev.status = EventStatus.FULL.value
     db.flush()
 
+    if reg == "team" and team_id is not None and payload.join_team_id is None:
+        n_on_team = db.scalar(
+            select(func.count()).select_from(Booking).where(
+                Booking.event_id == event_id,
+                Booking.team_id == team_id,
+            )
+        )
+        if (n_on_team or 0) == 1:
+            _persist_team_roster(ev, team_id, current, payload.team_members)
+
     client_secret: str | None = None
     pk_out: str | None = None
 
@@ -2165,6 +2250,7 @@ def create_my_booking(
     return _booking_player_read(
         b,
         u,
+        db,
         payment_client_secret=client_secret,
         stripe_publishable_key=pk_out,
     )
@@ -2201,7 +2287,7 @@ def update_booking_checkin_address(
     u = db.get(User, b.user_id)
     if u is None:
         raise HTTPException(status_code=500, detail="User missing for booking")
-    return _booking_player_read(b, u)
+    return _booking_player_read(b, u, db)
 
 
 @app.post("/webhooks/stripe")

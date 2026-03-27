@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'team_roster_member.dart';
+
 @immutable
 class BookingPlayer {
   const BookingPlayer({
@@ -11,6 +13,7 @@ class BookingPlayer {
     this.teamId,
     this.teamName,
     this.address,
+    this.teamRoster,
   });
 
   final int bookingId;
@@ -24,8 +27,23 @@ class BookingPlayer {
   /// Meet / check-in line saved by organizer while the match is live.
   final String? address;
 
+  /// Captain-declared roster for this squad (same list on each member booking).
+  final List<TeamRosterMember>? teamRoster;
+
   factory BookingPlayer.fromJson(Map<String, dynamic> json) {
     int asInt(dynamic v) => v is int ? v : (v as num).toInt();
+
+    List<TeamRosterMember>? roster;
+    final raw = json['team_roster'];
+    if (raw is List<dynamic>) {
+      roster = raw
+          .map((e) => TeamRosterMember.fromJson(e as Map<String, dynamic>))
+          .where((m) => m.name.isNotEmpty)
+          .toList();
+      if (roster.isEmpty) {
+        roster = null;
+      }
+    }
 
     return BookingPlayer(
       bookingId: asInt(json['booking_id']),
@@ -36,6 +54,7 @@ class BookingPlayer {
       teamId: json['team_id'] == null ? null : asInt(json['team_id']),
       teamName: json['team_name'] as String?,
       address: json['address'] as String?,
+      teamRoster: roster,
     );
   }
 }

@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../config/api_config.dart';
 import '../models/booking_player.dart';
+import '../models/team_roster_member.dart';
 import '../models/organizer_matchup.dart';
 import '../models/scheduled_match.dart';
 import '../models/sport_event.dart';
@@ -1384,6 +1385,14 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
       for (final tid in teamIds) {
         final members = byTeam[tid]!;
         final squadName = _squadDisplayName(tid, members);
+        List<TeamRosterMember>? declaredRoster;
+        for (final p in members) {
+          final r = p.teamRoster;
+          if (r != null && r.isNotEmpty) {
+            declaredRoster = r;
+            break;
+          }
+        }
         out.add(
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
@@ -1409,13 +1418,42 @@ class _OrganizerDashboardState extends State<OrganizerDashboard> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        'Squad ID $tid — share this so teammates join the same group.',
+                        'Team code $tid — share so teammates with accounts can join.',
                         style: theme.textTheme.labelSmall?.copyWith(
                           color: SportsAppColors.textMuted,
                           fontWeight: FontWeight.w600,
                           height: 1.3,
                         ),
                       ),
+                      if (declaredRoster != null) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          'Roster from captain',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: SportsAppColors.accentBlue900,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.2,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        ...declaredRoster.map((m) {
+                          final badge = m.isCaptain ? 'Captain · ' : '';
+                          final em = m.email != null && m.email!.isNotEmpty
+                              ? ' · ${m.email}'
+                              : '';
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Text(
+                              '$badge${m.name}$em',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: SportsAppColors.textMuted,
+                                fontWeight: FontWeight.w600,
+                                height: 1.35,
+                              ),
+                            ),
+                          );
+                        }),
+                      ],
                     ],
                   ),
                 ),

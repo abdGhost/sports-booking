@@ -35,6 +35,24 @@ String _skillLevelDisplay(String key) {
   }
 }
 
+/// Player flow: either create a new team name or join with the numeric code the captain sees after booking.
+enum _TeamBookMode { createNew, joinWithCode }
+
+/// Teammate name/email rows for the captain flow; the sheet owner must [dispose] each instance.
+final class _CaptainTeammateRow {
+  _CaptainTeammateRow()
+      : name = TextEditingController(),
+        email = TextEditingController();
+
+  final TextEditingController name;
+  final TextEditingController email;
+
+  void dispose() {
+    name.dispose();
+    email.dispose();
+  }
+}
+
 String _competitionFormatLabel(String key) {
   switch (key.toLowerCase()) {
     case 'knockout':
@@ -429,11 +447,14 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     String? teamName;
     int? joinTeamId;
     var paymentMethod = 'free';
+    List<Map<String, dynamic>>? captainTeamMembersForApi;
 
     if (_event.registrationMode == 'team') {
-      final squadCtrl = TextEditingController();
-      final joinCtrl = TextEditingController();
-      final sheetResult = await showModalBottomSheet<String>(
+      final nameCtrl = TextEditingController();
+      final codeCtrl = TextEditingController();
+      final teammateRows = <_CaptainTeammateRow>[];
+      final sheetResult =
+          await showModalBottomSheet<({String pay, _TeamBookMode mode})>(
         context: context,
         isScrollControlled: true,
         backgroundColor: SportsAppColors.card,
@@ -442,6 +463,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         ),
         builder: (ctx) {
           var payMethod = 'free';
+          var bookMode = _TeamBookMode.createNew;
           return Padding(
             padding: EdgeInsets.only(
               left: 20,
@@ -465,11 +487,32 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Create a new squad name, or enter your captain’s squad ID to join.',
+                        bookMode == _TeamBookMode.createNew
+                            ? 'You register as captain. Name your team, optionally add players on their behalf, then share the team code so anyone with an account can join.'
+                            : 'Enter the team code your captain received after they registered.',
                         style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
                               color: SportsAppColors.textMuted,
                               height: 1.35,
                             ),
+                      ),
+                      const SizedBox(height: 16),
+                      SegmentedButton<_TeamBookMode>(
+                        segments: const [
+                          ButtonSegment<_TeamBookMode>(
+                            value: _TeamBookMode.createNew,
+                            label: Text('Start a team'),
+                            icon: Icon(Icons.group_add_outlined, size: 18),
+                          ),
+                          ButtonSegment<_TeamBookMode>(
+                            value: _TeamBookMode.joinWithCode,
+                            label: Text('Join a team'),
+                            icon: Icon(Icons.login_rounded, size: 18),
+                          ),
+                        ],
+                        selected: {bookMode},
+                        onSelectionChanged: (s) {
+                          setModal(() => bookMode = s.first);
+                        },
                       ),
                       const SizedBox(height: 16),
                       _paymentMethodSection(
@@ -479,37 +522,104 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                         onChanged: (v) => setModal(() => payMethod = v),
                       ),
                       const SizedBox(height: 20),
-                      Text(
-                        'Squad details',
-                        style: Theme.of(ctx).textTheme.labelSmall?.copyWith(
-                              color: SportsAppColors.textMuted,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 0.5,
+                      if (bookMode == _TeamBookMode.createNew) ...[
+                        TextField(
+                          controller: nameCtrl,
+                          textCapitalization: TextCapitalization.words,
+                          decoration: const InputDecoration(
+                            labelText: 'Team name',
+                            hintText: 'e.g. Silchar Youth FC',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        Text(
+                          'Teammates (optional)',
+                          style: Theme.of(ctx).textTheme.labelSmall?.copyWith(
+                                color: SportsAppColors.textMuted,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.5,
+                              ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Players without an account yet — name and optional email for the organizer.',
+                          style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                                color: SportsAppColors.textMuted,
+                                height: 1.35,
+                              ),
+                        ),
+                        const SizedBox(height: 12),
+                        ...teammateRows.map((row) {
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: row.name,
+                                    textCapitalization:
+                                        TextCapitalization.words,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Player name',
+                                      isDense: true,
+                                      border: OutlineInputBorder(),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    controller: row.email,
+                                    keyboardType:
+                                        TextInputType.emailAddress,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Email (optional)',
+                                      isDense: true,
+                                      border: OutlineInputBorder(),
+                                    ),
+                                  ),
+                                ),
+                                IconButton(
+                                  onPressed: () {
+                                    setModal(() {
+                                      teammateRows.remove(row);
+                                      row.dispose();
+                                    });
+                                  },
+                                  icon: const Icon(Icons.close_rounded),
+                                  tooltip: 'Remove',
+                                ),
+                              ],
                             ),
-                      ),
-                      const SizedBox(height: 10),
-                      TextField(
-                        controller: squadCtrl,
-                        textCapitalization: TextCapitalization.words,
-                        decoration: const InputDecoration(
-                          labelText: 'New squad name',
-                          hintText: 'e.g. Silchar Youth FC',
-                          border: OutlineInputBorder(),
+                          );
+                        }),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            onPressed: () => setModal(
+                              () => teammateRows.add(_CaptainTeammateRow()),
+                            ),
+                            icon: const Icon(Icons.person_add_outlined, size: 20),
+                            label: const Text('Add teammate'),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: joinCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'Or join squad ID',
-                          hintText: 'Number from your captain',
-                          border: OutlineInputBorder(),
+                      ] else ...[
+                        TextField(
+                          controller: codeCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Team code',
+                            hintText: 'Numbers only',
+                            border: OutlineInputBorder(),
+                          ),
                         ),
-                      ),
+                      ],
                       const SizedBox(height: 20),
                       FilledButton(
-                        onPressed: () => Navigator.pop(ctx, payMethod),
+                        onPressed: () =>
+                            Navigator.pop(ctx, (pay: payMethod, mode: bookMode)),
                         style: FilledButton.styleFrom(
                           backgroundColor: SportsAppColors.navy,
                           foregroundColor: Colors.white,
@@ -525,31 +635,56 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           );
         },
       );
-      teamName = squadCtrl.text.trim().isEmpty ? null : squadCtrl.text.trim();
-      final joinRaw = joinCtrl.text.trim();
-      if (joinRaw.isNotEmpty) {
-        joinTeamId = int.tryParse(joinRaw);
+      final closedMode = sheetResult?.mode;
+      final nameRaw = nameCtrl.text.trim();
+      final codeRaw = codeCtrl.text.trim();
+      final list = <Map<String, dynamic>>[];
+      if (closedMode == _TeamBookMode.createNew) {
+        for (final t in teammateRows) {
+          final n = t.name.text.trim();
+          if (n.isEmpty) {
+            continue;
+          }
+          final e = t.email.text.trim();
+          if (e.isNotEmpty) {
+            list.add({'name': n, 'email': e});
+          } else {
+            list.add({'name': n});
+          }
+        }
+        captainTeamMembersForApi = list.isEmpty ? null : list;
       }
-      squadCtrl.dispose();
-      joinCtrl.dispose();
+      nameCtrl.dispose();
+      codeCtrl.dispose();
+      for (final t in teammateRows) {
+        t.dispose();
+      }
       if (sheetResult == null || !mounted) {
         return;
       }
-      paymentMethod = sheetResult;
-      if (joinTeamId == null &&
-          (teamName == null || teamName.isEmpty)) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Enter a squad name or a squad ID to join.'),
-          ),
-        );
-        return;
-      }
-      if (joinTeamId != null && joinTeamId < 1) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Squad ID must be a positive number.')),
-        );
-        return;
+      paymentMethod = sheetResult.pay;
+      if (closedMode == _TeamBookMode.createNew) {
+        teamName = nameRaw.isEmpty ? null : nameRaw;
+        joinTeamId = null;
+        if (teamName == null || teamName.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Enter your team name.'),
+            ),
+          );
+          return;
+        }
+      } else {
+        teamName = null;
+        joinTeamId = codeRaw.isNotEmpty ? int.tryParse(codeRaw) : null;
+        if (joinTeamId == null || joinTeamId < 1) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Enter the team code your captain shared.'),
+            ),
+          );
+          return;
+        }
       }
     } else {
       final pm = await _showIndividualFreeCheckoutSheet();
@@ -572,6 +707,10 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         }
       } else {
         body['team_name'] = teamName;
+        if (captainTeamMembersForApi != null &&
+            captainTeamMembersForApi.isNotEmpty) {
+          body['team_members'] = captainTeamMembersForApi;
+        }
       }
     }
 
@@ -650,7 +789,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         SnackBar(
           content: Text(
             tid != null
-                ? 'You’re in! Your squad ID is $tid (share it with teammates).'
+                ? 'You’re in! Team code for teammates: $tid'
                 : 'You’re booked.',
           ),
         ),
